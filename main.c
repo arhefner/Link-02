@@ -763,7 +763,6 @@ int main(int argc, char **argv) {
       addLibrary(argv[i]);
       }
     else if (strcmp(argv[i], "-v") == 0) {
-      printf("Link/02 v1.1\n");
       printf("by Michael H. Riley\n");
       printf("with contributions by:\n");
       printf("  Tony Hefner\n");
