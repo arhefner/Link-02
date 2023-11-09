@@ -88,6 +88,38 @@ void addObject(char* name) {
   strcpy(objects[numObjects-1],name);
   }
 
+word adjust(word address, char *bound) {
+  if (strncmp(bound,"word",4) == 0) {
+    address = (address + 1) & 0xfffe;
+    }
+  else if (strncmp(bound,"dword",5) == 0) {
+    address = (address + 3) & 0xfffc;
+    }
+  else if (strncmp(bound,"qword",5) == 0) {
+    address = (address + 7) & 0xfff8;
+    }
+  else if (strncmp(bound,"para",4) == 0) {
+    address = (address + 15) & 0xfff0;
+    }
+  else if (strncmp(bound,"32",2) == 0) {
+    address = (address + 31) & 0xffe0;
+    }
+  else if (strncmp(bound,"64",2) == 0) {
+    address = (address + 63) & 0xffc0;
+    }
+  else if (strncmp(bound,"128",3) == 0) {
+    address = (address + 127) & 0xff80;
+    }
+  else if (strncmp(bound,"page",4) == 0) {
+    address = (address + 255) & 0xff00;
+    }
+  else {
+    printf("Error: Unrecognized alignment: %s\n", bound);
+  }
+
+  return address;
+}
+
 int loadFile(char* filename) {
   int   i;
   int   j;
@@ -147,32 +179,14 @@ int loadFile(char* filename) {
     line = buffer;
     if (strncmp(line,".big",4) == 0) addressMode = 'B';
     else if (strncmp(line,".little",7) == 0) addressMode = 'L';
-    else if (strncmp(line, ".align ",7) == 0 && inProc != 0) {
+    else if (strncmp(line, ".align ",7) == 0) {
       line += 7;
       while (*line == ' ') line++;
-      if (strncmp(line,"word",4) == 0) {
-        offset = (offset + 1) & 0xfffe;
+      if (inProc) {
+        offset = adjust(offset, line);
         }
-      else if (strncmp(line,"dword",5) == 0) {
-        offset = (offset + 3) & 0xfffc;
-        }
-      else if (strncmp(line,"qword",5) == 0) {
-        offset = (offset + 7) & 0xfff8;
-        }
-      else if (strncmp(line,"para",4) == 0) {
-        offset = (offset + 15) & 0xfff0;
-        }
-      else if (strncmp(line,"32",2) == 0) {
-        offset = (offset + 31) & 0xffe0;
-        }
-      else if (strncmp(line,"64",2) == 0) {
-        offset = (offset + 63) & 0xffc0;
-        }
-      else if (strncmp(line,"128",3) == 0) {
-        offset = (offset + 127) & 0xff80;
-        }
-      else if (strncmp(line,"page",4) == 0) {
-        offset = (offset + 255) & 0xff00;
+      else {
+        address = adjust(address, line);
         }
       }
     else if (strncmp(line,".library ",9) == 0) {
@@ -258,6 +272,15 @@ int loadFile(char* filename) {
       line++;
       line = getHex(line, &addr);
       value = memory[addr+offset] + offset;
+      memory[addr+offset] = value & 0xff;
+      }
+    else if (*line == '<' && loadModule != 0) {
+      line++;
+      line = getHex(line, &addr);
+      value = memory[addr+offset] + offset;
+      if (((addr+offset) & 0xff00) != (value & 0xff00)) {
+        printf("Error: Short branch out of page at %04x\n", addr+offset);
+        }
       memory[addr+offset] = value & 0xff;
       }
     else if (*line == '=' && loadModule != 0) {
@@ -766,11 +789,12 @@ int main(int argc, char **argv) {
   resolved = 0;
   libScan = 0;
   loadModule = -1;
-  for (i=0; i<numObjects; i++)
+  for (i=0; i<numObjects; i++) {
     if (loadFile(objects[i]) < 0) {
       printf("Errors: aborting link\n");
       exit(1);
       }
+    }
   doLink();
   resolved = 1;
   while (numReferences > 0 && resolved != 0) {
