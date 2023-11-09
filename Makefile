@@ -1,6 +1,6 @@
 PROJECT=link02
 CC=gcc
-DEFS=
+DEFS=-std=c99
 INDIR=
 INCS=
 LIBDIR=

@@ -707,8 +707,7 @@ void sortSymbols() {
 int main(int argc, char **argv) {
   int   i;
   char *pchar;
-  printf("Link/02 v1.0\n");
-  printf("By Michael H. Riley\n\n");
+  printf("Link/02 v1.1\n");
   lowest = 0xffff;
   highest = 0x0000;
   numObjects = 0;
@@ -762,6 +761,13 @@ int main(int argc, char **argv) {
     else if (strcmp(argv[i], "-l") == 0) {
       i++;
       addLibrary(argv[i]);
+      }
+    else if (strcmp(argv[i], "-v") == 0) {
+      printf("by Michael H. Riley\n");
+      printf("with contributions by:\n");
+      printf("  Tony Hefner\n");
+      printf("  Gaston Williams\n");
+      exit(1);
       }
     else {
       addObject(argv[i]);

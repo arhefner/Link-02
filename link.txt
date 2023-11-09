@@ -13,6 +13,7 @@ link @controlfile
 -L path       - Add path to search lift for library files
 -be           - Use big-endian mode
 -le           - Use little-endian mode
+-v            - Display linker version
 
 Control file
 ------------
@@ -45,12 +46,14 @@ object file structure
 :addr bb bb bb ...   - Program bytes
 @addr                - Start address
 ?name addr           - External reference used at addr
-=name value          - public symbol
-{name                - begin relocatable procedure
-}                    - end relocatable procedure
-/name addr [lofs]    - add byte at addr with high of name
-\name addr           - add byte at addr with low of name
-+addr                - apply module offset at addr
-^addr                - apply high byte of module offset at addr
-vaddr                - apply low byte of module offset at addr
->inc                 - increase current address by 'inc'
+=name value          - Public symbol
+{name                - Begin relocatable procedure
+}                    - End relocatable procedure
+/name addr [lofs]    - Add byte at addr with high of name
+\name addr           - Add byte at addr with low of name
++addr                - Apply module offset at addr
+^addr                - Apply high byte of module offset at addr
+vaddr                - Apply low byte of module offset at addr
+>inc                 - Increase current address by 'inc'
+<addr                - Apply low byte of module offset at addr
+                       Test for short branch out of page
