@@ -1,6 +1,75 @@
-# Link-02
-General linker for series/02 development tools
+# Link/02 - General linker for series/02 development tools
 
-Relocating linker for objects generated from my Series/X compilers and assemblers.
+This is an update to Mike Riley's LINK/02 relocating linker. It is a relocating linker for objects generated from his Series/X compilers and assemblers, such as Asm/02.
 
-The object format is simple ascii, making it easy for other tool developers to generate object files that can be linked using this linker
+The object format is simple ascii, making it easy for other tool developers to generate object files that can be linked using this linker.
+
+## Original Repo
+https://github.com/rileym65/Link-02
+
+## Command Line
+```
+link [options] obj obj obj ...
+link @controlfile
+```
+
+## Command Line Switches
+```
+-b            - Output straight binary
+-c            - Output in .cmd format
+-e            - Output Elf/OS executable
+-i            - Output Intel hex
+-I path       - Add path to search list for object files
+-h            - Output RCS hex
+-s            - Show public symbols
+-o name       - Specify output filename
+-l name       - Specify library to search
+-L path       - Add path to search lift for library files
+-be           - Use big-endian mode
+-le           - Use little-endian mode
+-v            - Display linker version number
+```
+
+## Control file
+```
+add filename         - add specified object file
+library filename     - add library to search
+mode big             - set big-endian mode
+mode little          - set little-endian mode
+mode binary          - set binary output mode
+mode cmd             - set .cmd output mode
+mode elfos           - set Elf/OS output mode
+mode intel           - set Intel hex output mode
+mode rcs             - set RCS hex output mode
+output filename      - filename for output
+```
+
+## Object file structure
+```
+.big                 - Use big-endian mode
+.little              - Use little-endian mode
+.requires module     - Requre module to be included
+.library filename    - Search specified library for references
+.align word          - Align procedure on word boundary (2 bytes)
+.align dword         - Align procedure on double word boundary (4 bytes)
+.align qword         - Align procedure on quad word boundary (8 bytes)
+.align para          - Align procedure on paragraph boundary (16 bytes)
+.align 32            - Align procedure on 32-byte boundary
+.align 64            - Align procedure on 64-byte boundary
+.align 128           - Align procedure on 128-byte boundary
+.align page          - Align procedure on page boundary (256 bytes)
+:addr bb bb bb ...   - Program bytes
+@addr                - Start address
+?name addr           - External reference used at addr
+=name value          - Public symbol
+{name                - Begin relocatable procedure
+}                    - End relocatable procedure
+/name addr [lofs]    - Add byte at addr with high of name
+\name addr           - Add byte at addr with low of name
++addr                - Apply module offset at addr
+^addr                - Apply high byte of module offset at addr
+vaddr                - Apply low byte of module offset at addr
+>inc                 - Increase current address by 'inc'
+<addr                - Apply low byte of module offset at addr
+                       Test for short branch out of page
+```
