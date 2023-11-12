@@ -4,7 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <fcntl.h>
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -13,6 +12,7 @@
 #define strncasecmp _strnicmp
 #define LIBPATH     "C:\\Users\\Public\\Series02\\"
 #else
+#include <strings.h>
 #include <unistd.h>
 #define O_BINARY 0
 #define LIBPATH        "/usr/local/lib/"
