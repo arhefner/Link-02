@@ -405,13 +405,14 @@ int loadFile(char* filename) {
   return 0;
   }
 
-void doLink() {
+int doLink() {
   int i;
   int j;
   int s;
   int errors;
   word address;
   word v;
+  int resolved;
   errors=0;
   resolved = 0;
   i = 0;
@@ -458,6 +459,7 @@ void doLink() {
         }
       }
     }
+    return resolved;
   }
 
 void outputBinary() {
@@ -707,7 +709,8 @@ void sortSymbols() {
 int main(int argc, char **argv) {
   int   i;
   char *pchar;
-  printf("Link/02 v1.1\n");
+  int resolved;
+  printf("Link/02 v1.2\n");
   lowest = 0xffff;
   highest = 0x0000;
   numObjects = 0;
@@ -792,7 +795,6 @@ int main(int argc, char **argv) {
     map[i] = 0;
     }
   address = 0;
-  resolved = 0;
   libScan = 0;
   loadModule = -1;
   for (i=0; i<numObjects; i++) {
@@ -805,14 +807,15 @@ int main(int argc, char **argv) {
   resolved = 1;
   while (numReferences > 0 && resolved != 0) {
     libScan = -1;
+    resolved = 0;
     for (i=0; i<numLibraries; i++) {
       loadModule = 0;
       if (loadFile(libraries[i]) < 0) {
         printf("Errors: aborting link\n");
         exit(1);
         }
+      resolved += doLink();
       }
-    doLink();
     }
   if (numReferences > 0) {
     for (i=0; i<numReferences; i++) {
