@@ -3,6 +3,7 @@ tutorial.doc
 *.o
 *.prg
 *.asm
+.vscode
 *.hex
 *.bin
 *.elfos
