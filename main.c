@@ -352,19 +352,23 @@ int loadFile(char* filename) {
       while (*line != 0 && *line > ' ') token[pos++] = *line++;
       token[pos] = 0;
       if (libScan != 0) {
-        for (i=0; i<numReferences; i++)
-          if (strcmp(references[i], token) == 0) {
-            loadModule = -1;
-            printf("Linking %s from library\n", token);
-            i = numReferences;
-            }
-        if (loadModule == 0) {
-          for (i=0; i<numRequires; i++)
-            if (requireAdded[i] == 'N' && strcmp(requires[i], token) == 0) {
+        int s;
+        s = findSymbol(token);
+        if (s == -1) {
+          for (i=0; i<numReferences; i++)
+            if (strcmp(references[i], token) == 0) {
               loadModule = -1;
-              requireAdded[i] = 'Y';
               printf("Linking %s from library\n", token);
+              i = numReferences;
               }
+          if (loadModule == 0) {
+            for (i=0; i<numRequires; i++)
+              if (requireAdded[i] == 'N' && strcmp(requires[i], token) == 0) {
+                loadModule = -1;
+                requireAdded[i] = 'Y';
+                printf("Linking %s from library\n", token);
+                }
+            }
           }
         }
       if (loadModule != 0) {
