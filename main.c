@@ -149,7 +149,8 @@ int loadFile(char* filename) {
           strcpy(path, libPath[i]);
           if (path[strlen(path)-1] != '/') strcat(path,"/");
           strcat(path, filename);
-          file = fopen(buffer, "r");
+          //grw - changed to open path instead of buffer
+          file = fopen(path, "r");
           if (file != NULL) i = numLibPath;
           i++;
           }
@@ -165,7 +166,8 @@ int loadFile(char* filename) {
         strcpy(path, incPath[i]);
         if (path[strlen(path)-1] != '/') strcat(path,"/");
         strcat(path, filename);
-        file = fopen(buffer, "r");
+        //grw - changed to open path instead of buffer
+        file = fopen(path, "r");
         if (file != NULL) i = numIncPath;
         i++;
         }
@@ -850,4 +852,3 @@ int main(int argc, char **argv) {
   printf("\n");
   return 0;
   }
-
