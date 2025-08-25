@@ -8,6 +8,7 @@ link @controlfile
 -I path       - Add path to search list for object files
 -h            - Output RCS hex
 -s            - Show public symbols
+-S            - Create .sym file for public symbols
 -o name       - Specify output filename
 -l name       - Specify library to search
 -L path       - Add path to search lift for library files
