@@ -68,5 +68,9 @@ LINK char **incPath;
 LINK int    numIncPath;
 LINK char **libPath;
 LINK int    numLibPath;
+//grw - added support for symbol map file
+LINK FILE   *symFile;
+LINK char    symName[64];
+LINK int     createSym;
 
 #endif

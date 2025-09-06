@@ -149,7 +149,8 @@ int loadFile(char* filename) {
           strcpy(path, libPath[i]);
           if (path[strlen(path)-1] != '/') strcat(path,"/");
           strcat(path, filename);
-          file = fopen(buffer, "r");
+          //grw - changed to open path instead of buffer
+          file = fopen(path, "r");
           if (file != NULL) i = numLibPath;
           i++;
           }
@@ -165,7 +166,8 @@ int loadFile(char* filename) {
         strcpy(path, incPath[i]);
         if (path[strlen(path)-1] != '/') strcat(path,"/");
         strcat(path, filename);
-        file = fopen(buffer, "r");
+        //grw - changed to open path instead of buffer
+        file = fopen(path, "r");
         if (file != NULL) i = numIncPath;
         i++;
         }
@@ -776,6 +778,10 @@ int main(int argc, char **argv) {
       printf("  Gaston Williams\n");
       exit(1);
       }
+    //grw - add option for Symbol file  
+    else if (strcmp(argv[i], "-S") == 0) {
+      createSym = -1;
+      }  
     else {
       addObject(argv[i]);
       }
@@ -794,6 +800,20 @@ int main(int argc, char **argv) {
     if (outMode == BM_INTEL) strcat(outName, ".intel");
     if (outMode == BM_RCS) strcat(outName, ".hex");
     }
+  //grw - create symbol file name from outName
+  if (createSym) {
+    //grw - symName is up to 64 characters including ".sym"
+    if (strlen(outName) > 60) {
+      strncpy(symName, outName, 60);
+      symName[60] = 0;
+    } else 
+      strcpy(symName, outName);
+    
+    for (i = 0; i < strlen(symName); i++)
+      if (symName[i] == '.')
+        symName[i] = 0;
+    strcat(symName, ".sym");    
+  }  
   for (i=0; i<65536; i++) {
     memory[i] = 0;
     map[i] = 0;
@@ -842,12 +862,23 @@ int main(int argc, char **argv) {
   printf("Public symbols : %d\n",numSymbols);
   if (startAddress != 0xffff)
     printf("Start address  : %04x\n",startAddress);
+
   if (showSymbols) {
     sortSymbols();
     for (i=0; i<numSymbols; i++)
       printf("%-20s %04x\n",symbols[i], values[i]);
-    }
+  }
+    
+  if (createSym) {
+    symFile = fopen(symName, "w");
+    if (symFile != NULL) {
+    sortSymbols();
+    for (i=0; i<numSymbols; i++)
+      fprintf(symFile, "%-20s %04x\n",symbols[i], values[i]);
+    fclose(symFile);
+    } else 
+      printf("Error opening symbol map file %s.\n", symName);
+  }
   printf("\n");
   return 0;
   }
-
