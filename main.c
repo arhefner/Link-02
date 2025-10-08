@@ -716,7 +716,7 @@ int main(int argc, char **argv) {
   int   i;
   char *pchar;
   int resolved;
-  printf("Link/02 v1.2\n");
+  printf("Link/02 v1.3\n");
   lowest = 0xffff;
   highest = 0x0000;
   numObjects = 0;
