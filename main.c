@@ -134,7 +134,8 @@ int loadFile(char* filename) {
   word  lofs;
   word  low;
   char *line;
-  if (libScan == 0) printf("Linking: %s\n",filename);
+  //grw - suppress linking messages when creating sym file
+  if (!createSym && (libScan == 0)) printf("Linking: %s\n",filename);
   inProc = 0;
   offset = 0;
   file = fopen(filename,"r");
@@ -360,7 +361,9 @@ int loadFile(char* filename) {
           for (i=0; i<numReferences; i++)
             if (strcmp(references[i], token) == 0) {
               loadModule = -1;
-              printf("Linking %s from library\n", token);
+              //grw - suppress linking messages when creating sym file
+              if (!createSym)
+                printf("Linking %s from library\n", token);
               i = numReferences;
               }
           if (loadModule == 0) {
@@ -368,7 +371,9 @@ int loadFile(char* filename) {
               if (requireAdded[i] == 'N' && strcmp(requires[i], token) == 0) {
                 loadModule = -1;
                 requireAdded[i] = 'Y';
-                printf("Linking %s from library\n", token);
+                //grw - suppress linking messages when creating sym file
+                if (!createSym)
+                  printf("Linking %s from library\n", token);
                 }
             }
           }
@@ -778,10 +783,10 @@ int main(int argc, char **argv) {
       printf("  Gaston Williams\n");
       exit(1);
       }
-    //grw - add option for Symbol file  
+    //grw - add option for Symbol file
     else if (strcmp(argv[i], "-S") == 0) {
       createSym = -1;
-      }  
+      }
     else {
       addObject(argv[i]);
       }
@@ -806,14 +811,14 @@ int main(int argc, char **argv) {
     if (strlen(outName) > 60) {
       strncpy(symName, outName, 60);
       symName[60] = 0;
-    } else 
+    } else
       strcpy(symName, outName);
-    
+
     for (i = 0; i < strlen(symName); i++)
       if (symName[i] == '.')
         symName[i] = 0;
-    strcat(symName, ".sym");    
-  }  
+    strcat(symName, ".sym");
+  }
   for (i=0; i<65536; i++) {
     memory[i] = 0;
     map[i] = 0;
@@ -868,7 +873,7 @@ int main(int argc, char **argv) {
     for (i=0; i<numSymbols; i++)
       printf("%-20s %04x\n",symbols[i], values[i]);
   }
-    
+
   if (createSym) {
     symFile = fopen(symName, "w");
     if (symFile != NULL) {
@@ -876,7 +881,7 @@ int main(int argc, char **argv) {
     for (i=0; i<numSymbols; i++)
       fprintf(symFile, "%-20s %04x\n",symbols[i], values[i]);
     fclose(symFile);
-    } else 
+    } else
       printf("Error opening symbol map file %s.\n", symName);
   }
   printf("\n");
