@@ -6,7 +6,8 @@ INCS=
 LIBDIR=
 LIBS=
 OBJS=\
-	main.o
+	main.o \
+	relax.o
 
 $(PROJECT): $(OBJS)
 	$(CC) $(DEFS) $(LIBDIR) $(OBJS) $(LIBS) -o $(PROJECT)
@@ -23,4 +24,5 @@ install:
 	chmod a+rx /usr/local/bin/link02
 
 main.o:                header.h main.c
+relax.o:                header.h relax.c
 

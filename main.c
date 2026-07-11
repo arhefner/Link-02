@@ -2,7 +2,7 @@
 
 #include "header.h"
 
-#define NAME_AND_VERSION  "Link/02 v1.6"
+#define NAME_AND_VERSION  "Link/02 v1.7"
 
 struct tm *localtime_r(const time_t *timer, struct tm *buf)
 {
@@ -276,7 +276,11 @@ int loadFile(char *filename) {
     } else if (*line == '@') {
       line = buffer + 1;
       getHex(line, &startAddress);
-    } else if (*line == '+' && loadModule != 0) {
+    } else if ((*line == '+' || *line == '#') && loadModule != 0) {
+      /* '#' (local long-branch operand, tagged by Asm/02's OT_LBR case) is
+       * resolved identically to plain '+' whenever -r doesn't intervene
+       * to shrink it first -- both are a full-word local target needing
+       * the proc base added in. */
       line++;
       line = getHex(line, &addr);
       value = readMem(addr + offset);
@@ -298,9 +302,42 @@ int loadFile(char *filename) {
     } else if (*line == '<' && loadModule != 0) {
       line++;
       line = getHex(line, &addr);
-      value = memory[addr + offset] + offset;
-      if (((addr + offset) & 0xff00) != (value & 0xff00)) {
-        printf("Error: Short branch out of page at %04x\n", addr + offset);
+      if (rlxActive) {
+        /* Relaxation-generated '<' lines carry the FULL (unmasked)
+         * proc-relative target as an explicit field, followed by the
+         * original proc name and original, pre-shrink offset (for
+         * failure reporting). This is NOT optional the way the trailing
+         * identity fields are: a single stored byte can only ever
+         * represent a target whose own local offset is < 256, so
+         * memory[addr+offset] alone (the plain, non-relax '<' path
+         * below) cannot even correctly VALIDATE a target from a large
+         * proc, let alone resolve it -- the high bits of the true
+         * target are simply gone once they've been masked into one
+         * byte. Reading the full value back out of the text sidesteps
+         * that loss entirely. */
+        word fullTarget;
+        char origProc[128];
+        word origOff;
+        int p = 0;
+        while (*line == ' ') line++;
+        line = getHex(line, &fullTarget);
+        value = fullTarget + offset;
+        if (((addr + offset) & 0xff00) != (value & 0xff00)) {
+          printf("Error: Short branch out of page at %04x\n", addr + offset);
+          while (*line == ' ') line++;
+          while (*line != 0 && *line > ' ') origProc[p++] = *line++;
+          origProc[p] = 0;
+          while (*line == ' ') line++;
+          if (p > 0 && *line != 0) {
+            getHex(line, &origOff);
+            rlxRecordFailure(rlxCurOrigFile, origProc, origOff);
+          }
+        }
+      } else {
+        value = memory[addr + offset] + offset;
+        if (((addr + offset) & 0xff00) != (value & 0xff00)) {
+          printf("Error: Short branch out of page at %04x\n", addr + offset);
+        }
       }
       memory[addr + offset] = value & 0xff;
     } else if (*line == '=' && loadModule != 0) {
@@ -332,7 +369,12 @@ int loadFile(char *filename) {
         if (strcmp(token, requires[i]) == 0) {
           requireAdded[i] = 'Y';
         }
-    } else if (*line == '?' && loadModule != 0) {
+    } else if ((*line == '?' || *line == '!') && loadModule != 0) {
+      /* '!' (external-target long-branch operand, tagged by Asm/02's
+       * OT_LBR case) is resolved identically to plain '?' -- both are a
+       * full-word external reference. '!' branches are never shrunk by
+       * -r (see relax.c's header comment), so this is the only path
+       * that ever resolves them. */
       line++;
       pos = 0;
       while (*line != 0 && *line > ' ') token[pos++] = *line++;
@@ -752,6 +794,8 @@ int main(int argc, char **argv) {
   addressMode = 'L';
   numLibPath = 0;
   numIncPath = 0;
+  doRelax = 0;
+  rlxActive = 0;
   tv = time(NULL);
   localtime_r(&tv, &dt);
   buildMonth = dt.tm_mon + 1;
@@ -783,6 +827,8 @@ int main(int argc, char **argv) {
       addressMode = 'B';
     else if (strcmp(argv[i], "-le") == 0)
       addressMode = 'L';
+    else if (strcmp(argv[i], "-r") == 0)
+      doRelax = -1;
     else if (strcmp(argv[i], "-I") == 0) {
       i++;
       numIncPath++;
@@ -883,6 +929,13 @@ int main(int argc, char **argv) {
   address = 0;
   libScan = 0;
   loadModule = -1;
+  if (doRelax) {
+    /* Branch relaxation: relax.c drives its own load/doLink rounds
+     * internally (see runRelaxedLink()'s header comment) and leaves the
+     * global link state exactly as if the block below had run once,
+     * successfully, on the final (all in-range) rewritten text. */
+    runRelaxedLink();
+  } else {
   for (i = 0; i < numObjects; i++) {
     if (loadFile(objects[i]) < 0) {
       printf("Errors: aborting link\n");
@@ -902,6 +955,7 @@ int main(int argc, char **argv) {
       }
       resolved += doLink();
     }
+  }
   }
   if (numReferences > 0) {
     for (i = 0; i < numReferences; i++) {

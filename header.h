@@ -81,4 +81,23 @@ LINK int buildMinute;
 LINK int buildSecond;
 LINK int buildNumber;
 
+/* Branch-relaxation support (see relax.c). doRelax is set by the -r
+ * command-line flag. rlxActive/rlxCurOrigFile are used to let loadFile()'s
+ * existing '<' (short-branch) error path report failures back to relax.c
+ * without relax.c needing to duplicate any of loadFile()'s own parsing. */
+LINK int doRelax;
+LINK int rlxActive;
+LINK char rlxCurOrigFile[1024];
+
+int loadFile(char *filename);
+int doLink();
+char *getHex(char *line, word *value);
+int findSymbol(char *name);
+word readMem(word address);
+void writeMem(word address, word value);
+void addReference(char *name, word value, char typ, byte low);
+
+int runRelaxedLink();
+void rlxRecordFailure(char *origFile, char *procName, word origOffset);
+
 #endif
