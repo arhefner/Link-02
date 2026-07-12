@@ -422,18 +422,37 @@ static void rlxEmitProc(FILE *out, char *origFile, RlxProc *orig,
     } else if (fx->type == '=') {
       sprintf(fixupText[numFixupText++], "=%s %04x\n", fx->name, newOff);
     } else if (fx->type == '<') {
-      /* Not expected pre-relax in this codebase (no hand-written short
-       * branches exist here -- see rlxParseFile()'s own comment), but
-       * kept consistent with the '#'-shrinking case's output format:
-       * loadFile()'s '<' handler always expects a full-target field
-       * once rlxActive is set. The stored byte is the best available
-       * stand-in (correct as long as the original target's own local
-       * offset was already < 256, same assumption a genuine short
-       * branch needs regardless of relaxation). */
-      byte v = orig->bytes[fx->offset];
-      nbytes[newOff] = v;
+      /* A genuine, hand-written short branch (asm02-emitted directly,
+       * not one of our own '#'-shrink products) -- first real instance
+       * found 2026-07-11 in progs/mr.asm's readlp loop. BUG FIXED THE
+       * SAME DAY: this originally just copied the stored byte through
+       * unchanged, which is only correct if NOTHING between the proc's
+       * start and this target ever shrinks -- if any '#'-candidate
+       * before the target shrinks, the target's true proc-relative
+       * position moves but the stored byte doesn't, silently pointing
+       * the branch at the wrong place once resolved. Caught immediately
+       * via direct byte verification (the standing project practice):
+       * mr_receive's own readlp branch resolved to an address hundreds
+       * of bytes past the end of the program. Fixed by reconstructing
+       * the original target from the stored byte and remapping it
+       * exactly like any other local target.
+       *
+       * The stored byte is still the ONLY information available for the
+       * target -- unlike the '#'-shrink case, there are no unmasked
+       * high bits to recover, since asm02 itself only ever stored one
+       * byte for a genuine short branch in the first place. This means
+       * a hand-written short branch whose target's own proc-relative
+       * offset is >= 256 was never representable correctly even before
+       * relaxation existed, and still isn't -- a pre-existing, inherent
+       * limit of the '<' mechanism itself, not something introduced or
+       * fixable here. Fine for now: proc sizes in this codebase are
+       * nowhere near that (mr_receive itself is ~160 bytes). */
+      word targetOrig = orig->bytes[fx->offset];
+      word targetNew = rlxRemap(targetOrig, removed, numShrink);
+      nbytes[newOff] = targetNew & 0xff;
       ndefined[newOff] = 1;
-      sprintf(fixupText[numFixupText++], "<%04x %04x\n", newOff, v);
+      sprintf(fixupText[numFixupText++], "<%04x %04x\n", newOff,
+              targetNew & 0xff);
     }
   }
 
@@ -659,6 +678,16 @@ int runRelaxedLink() {
     if (!quiet)
       printf("Relax round %d: %d branch(es) failed out-of-page check\n",
              round, rlxNumFailedThisRound);
+    if (shortBranchFatal) {
+      /* A '<' failed with no original-branch identity to exclude and
+       * retry -- a genuine hand-written short branch that's out of
+       * range at its actual linked position, not one of relax.c's own
+       * shrink candidates. No amount of further rounds fixes this;
+       * main()'s own shortBranchFatal check would catch it too, but
+       * exiting here avoids pointlessly iterating first. */
+      printf("Errors during link.  Aborting output\n");
+      exit(1);
+    }
     if (rlxNumFailedThisRound == 0) {
       if (!ok) {
         /* Unresolved external symbols -- a real link error, unrelated to

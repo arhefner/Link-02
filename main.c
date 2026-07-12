@@ -331,12 +331,19 @@ int loadFile(char *filename) {
           if (p > 0 && *line != 0) {
             getHex(line, &origOff);
             rlxRecordFailure(rlxCurOrigFile, origProc, origOff);
+          } else {
+            /* No original-branch identity to record -- this '<' wasn't
+             * one of relax.c's own shrink candidates (a genuine hand-
+             * written short branch instead), so there's nothing an
+             * exclude-and-retry round could do about it. Fatal. */
+            shortBranchFatal = 1;
           }
         }
       } else {
         value = memory[addr + offset] + offset;
         if (((addr + offset) & 0xff00) != (value & 0xff00)) {
           printf("Error: Short branch out of page at %04x\n", addr + offset);
+          shortBranchFatal = 1;
         }
       }
       memory[addr + offset] = value & 0xff;
@@ -796,6 +803,7 @@ int main(int argc, char **argv) {
   numIncPath = 0;
   doRelax = 0;
   rlxActive = 0;
+  shortBranchFatal = 0;
   tv = time(NULL);
   localtime_r(&tv, &dt);
   buildMonth = dt.tm_mon + 1;
@@ -956,6 +964,10 @@ int main(int argc, char **argv) {
       resolved += doLink();
     }
   }
+  }
+  if (shortBranchFatal) {
+    printf("Errors during link.  Aborting output\n");
+    exit(1);
   }
   if (numReferences > 0) {
     for (i = 0; i < numReferences; i++) {

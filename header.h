@@ -89,6 +89,18 @@ LINK int doRelax;
 LINK int rlxActive;
 LINK char rlxCurOrigFile[1024];
 
+/* Set by loadFile()'s '<' handler whenever a short-branch out-of-page
+ * error is detected AND there's no way to recover from it -- either
+ * because -r isn't active at all (no retry mechanism exists outside
+ * relax.c), or because it's a genuine hand-written short branch rather
+ * than one of relax.c's own shrink candidates (nothing to add to an
+ * exclusion set for -- it was never a candidate). Previously such an
+ * error only ever printed a message and link02 wrote output anyway,
+ * silently producing a corrupted binary; checked by both main()'s
+ * plain link path and relax.c's round loop, each aborting before any
+ * output is written once this is set. */
+LINK int shortBranchFatal;
+
 int loadFile(char *filename);
 int doLink();
 char *getHex(char *line, word *value);
