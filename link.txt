@@ -8,6 +8,7 @@ link @controlfile
 -I path       - Add path to search list for object files
 -h            - Output RCS hex
 -q            - Show minimal output
+-r            - Enable short-branch relaxation (see below)
 -s            - Show public symbols
 -S            - Create .sym file for public symbols
 -o name       - Specify output filename
@@ -57,5 +58,75 @@ object file structure
 ^addr                - Apply high byte of module offset at addr
 vaddr                - Apply low byte of module offset at addr
 >inc                 - Increase current address by 'inc'
-<addr                - Apply low byte of module offset at addr
+<addr target         - Apply low byte of module offset at addr
                        Test for short branch out of page
+#addr                - Local long-branch operand (same-proc target).
+                       Resolved exactly like '+' unless -r is given, in
+                       which case it's also a candidate to be shrunk to
+                       a 2-byte short branch (opcode -0x90) if the
+                       target ends up on the same page. Never emitted
+                       by hand -- this is what an assembler emits (in
+                       place of '+') for a long branch whose target is
+                       local to the same procedure, opting it in to -r.
+!name addr           - External long-branch operand. Resolved exactly
+                       like '?'; never a candidate for shrinking, since
+                       an external target's final address (and
+                       therefore its page) isn't known until the
+                       symbol resolves, by which point this procedure's
+                       own layout must already be final. Emitted (in
+                       place of '?') for a long branch to a symbol
+                       outside the current procedure.
+
+Short-branch relaxation (-r)
+-----------------------------
+With -r, Link/02 makes repeated internal load/link passes, each time
+regenerating every procedure's object text from scratch for a given
+"must stay long" exclusion set: '#'-tagged branches not in that set get
+their opcode shortened and their two operand bytes collapsed to one,
+and every offset in the procedure (byte positions, every fixup's own
+patch offset, and local fixups' stored targets) is renumbered against
+the procedure's new, smaller size. That rewritten text is fed through
+the ordinary, unmodified object-loading and linking pipeline, exactly
+as if it were real input. If a shrunk branch resolves to a target that
+turns out not to share the high byte of its own new address (i.e. it
+doesn't fit as a short branch after all), that one branch is added to
+the exclusion set and every procedure is regenerated fresh from the
+original, unshrunk state -- not patched in place -- and the whole
+process repeats until a pass produces zero such failures. '!' branches
+(external targets) are never touched, only '#' (local targets).
+
+Only procedures ('{name' ... '}') are affected; ORG-mode code (outside
+any procedure) always keeps its original branch encoding regardless of
+-r, since there's no "how big is this region" question for it to
+answer. A procedure that needs a hand-written short branch to always
+land on a known page (a tight, timing-sensitive loop, for example) can
+force that with '.align page' immediately before its '{name' record --
+"immediately before" matters, since alignment appearing anywhere else
+does not reserve the padding an assembler's own byte-offset bookkeeping
+already assumed, and silently produces the wrong addresses. A genuine
+hand-written short branch (an ordinary '<' record an assembler emitted
+directly, not one -r produced) is left exactly as authored; -r only
+manufactures new '<' records out of '#' candidates it chose to shrink,
+it never removes or rewrites an existing one, though a hand-written
+'<' is still subject to the same page validation as always.
+
+Environment variables (debugging/tuning aids, none required for normal
+use):
+  RLX_BATCH_EXCLUDE  - Any value: on a failed pass, exclude every
+                       branch that failed at once, instead of the
+                       default (exclude only the first one and re-
+                       evaluate the rest fresh next pass). Batch
+                       exclusion converges in far fewer passes but can
+                       leave a few more branches long than necessary,
+                       since a branch that only failed because an
+                       earlier one in the same batch would have shifted
+                       it back into range never gets a chance to prove
+                       that on its own.
+  RLX_MAX_SHRINK n   - Stop shrinking additional branches once n have
+                       been shrunk in a pass (further candidates stay
+                       long). Mainly useful for isolating a suspected
+                       relaxation bug to a smaller reproduction.
+  RLX_KEEP_TEMP      - Any value: keep the intermediate, regenerated
+                       per-pass object files (normally deleted) at
+                       /tmp/relax_round<N>_<obj-index>.prg for
+                       inspection.

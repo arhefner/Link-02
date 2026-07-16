@@ -330,6 +330,137 @@
 	specified address and the 'v' marker will add the low byte of the
 	module address to the byte at the specified address.
 [=]
+	That covers the record types you need to generate ordinary objects
+	for Link/02.  There is one more topic worth knowing about, since it
+	can change what your assembler should emit for one specific kind of
+	instruction: short-branch relaxation.
+[=]
+	The Series/02 processors have both a 2-byte "short branch" form
+	(target must be on the same page as the byte after the
+	instruction) and a 3-byte "long branch" form (target can be
+	anywhere).  Most assemblers, including Asm/02, let a programmer
+	write a branch mnemonic without knowing in advance whether its
+	target will end up close enough to use the short form -- so they
+	default to always emitting the long form for anything that might
+	branch outside the current page, and rely on the programmer to
+	hand-optimize specific branches to their short form only when they
+	already know it's safe.
+[=]
+	Link/02 can do that optimization itself, automatically, for any
+	long branch whose operand your assembler tags as such.  This is
+	the '#' and '!' record types.  They work exactly like '+' and '?'
+	-- '#' is a local (same-procedure) 16-bit reference, '!' is an
+	external one -- with one difference: Link/02 is now allowed to
+	notice that a '#' branch's target ends up on the same page as the
+	branch itself, and rewrite the instruction to its 2-byte short
+	form instead of resolving it as a 3-byte long branch.  This only
+	ever happens when the '-r' command line switch is given; without
+	it, '#' and '!' resolve exactly like '+' and '?' always did, so
+	tagging your long branches this way costs nothing on an ordinary
+	link.
+[=]
+	'!' branches are never shortened, even with '-r'.  An external
+	target's real address isn't known until its defining module is
+	loaded and its '=' record processed, which can happen well after
+	the branching procedure's own layout has already been finalized --
+	so there's no safe point at which an external branch's range could
+	still be checked.  Only same-procedure ('#') branches are ever
+	candidates.
+[=]
+	If your assembler already distinguishes branch instructions from
+	other 16-bit references (it has to, in order to pick the opcode),
+	the change needed to support relaxation is small: wherever it
+	would emit a '+' for a long branch's local target, emit '#'
+	instead; wherever it would emit a '?' for a long branch's external
+	target, emit '!' instead.  Every other 16-bit reference -- data
+	words, non-branch address loads, and so on -- keeps using '+' and
+	'?' as before, since only real branch instructions can be
+	shortened this way.
+[=]
+	Let's revisit the 'delay' PROC example from earlier.  Asm/02
+	already recognizes LBNZ as a long branch and tags its two operands
+	accordingly, so reassembling that exact same source produces this
+	object, with '#' in place of the '+' shown earlier:
+[=]
+[UB]
+          .big
+          {delay
+          :0000 f8 ff bc f8 ff ac 2c 8c ca 00 06 9c ca 00 06 d5
+          #0009
+          #000d
+          }
+[UE]
+[=]
+	Linked normally (no '-r'), this resolves identically to the
+	original '+' version -- same bytes, same size.  But linked with
+	'-r', both LBNZ instructions turn out to target 'delaylp', which
+	ends up on the same page as both branches (the whole procedure is
+	only 14 bytes), so both get shortened.  Link/02 prints a short
+	summary of what it did:
+[=]
+[UB]
+          Relax round 0: 0 branch(es) failed out-of-page check
+          Relaxation: 2 of 2 local long branches shortened (1 rounds)
+[UE]
+[=]
+	and the procedure's own final bytes shrink from 16 to 14:
+[=]
+[UB]
+          f8 ff bc f8 ff ac 2c 8c 3a 06 9c 3a 06 d5
+[UE]
+[=]
+	If you're curious what Link/02 does internally to get there: with
+	'-r', it doesn't patch branch bytes in place.  Instead it makes
+	repeated passes, and on each one it regenerates every procedure's
+	object text completely from scratch for a given "these must stay
+	long" set (empty on the first pass) -- non-excluded '#' branches
+	get shortened and every offset in the procedure (byte positions,
+	fixup patch offsets, local fixups' own stored targets) is
+	renumbered against the procedure's new, smaller size before
+	anything is resolved.  That regenerated text is fed through the
+	same ordinary object-loading and linking process used for any
+	other input.  If a shortened branch then turns out not to actually
+	fit (some other branch elsewhere in the same procedure grew rather
+	than shrank, moving the target off the page after all), that one
+	branch is added to the exclusion set and every procedure is
+	regenerated fresh again -- not patched -- and the whole thing
+	repeats until a pass produces no such failures.  You will not see
+	any of this in the object file itself; it is purely a Link/02-side
+	optimization, invisible to your assembler except for the '#'/'!'
+	tags it emits up front.
+[=]
+	If your procedure genuinely needs a short branch at a specific,
+	known-safe spot -- a tight loop where every byte or cycle counts,
+	say -- your assembler can still emit a plain '<' record directly,
+	exactly as it always could.  Unlike '#', a '<' record carries no
+	separate target field: the low byte already stored in the ':'
+	data at that offset IS the target, and Link/02 only adds the
+	procedure's own load-address offset to it and checks the result
+	still lands on the same page.  Here's an assembled BNZ (short
+	branch) instruction and the object it produces:
+[=]
+[UB]
+          .big
+          {loopy
+          :0000 f8 10 ac 2c 8c 3a 03 d5
+          <0006
+          }
+[UE]
+[=]
+	A procedure that mixes hand-written short branches with '-r'
+	relaxation works fine -- Link/02 remaps a plain '<' record's
+	stored target right along with everything else as procedures
+	shrink, the same as it does for every other record type.  The one
+	thing worth knowing: if you want a short branch's own target to be
+	GUARANTEED to stay on the same page no matter what relaxation does
+	elsewhere in the procedure, align the whole procedure to a page
+	boundary with '.align page' immediately before its '{name' record
+	(see "object file structure" for the other alignment sizes).
+	"Immediately before" matters -- alignment appearing anywhere else
+	in the middle of a procedure does not reserve space your
+	assembler's own byte-offset bookkeeping already assumed wasn't
+	there, and produces wrong addresses.
+[=]
 	That covers all of the record types currently recognized by Link/02.
 [=]
 
