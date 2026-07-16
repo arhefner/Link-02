@@ -2,7 +2,7 @@
 
 #include "header.h"
 
-#define NAME_AND_VERSION  "Link/02 v1.7"
+#define NAME_AND_VERSION  "Link/02 v1.8"
 
 struct tm *localtime_r(const time_t *timer, struct tm *buf)
 {
@@ -323,19 +323,26 @@ int loadFile(char *filename) {
         line = getHex(line, &fullTarget);
         value = fullTarget + offset;
         if (((addr + offset) & 0xff00) != (value & 0xff00)) {
-          printf("Error: Short branch out of page at %04x\n", addr + offset);
           while (*line == ' ') line++;
           while (*line != 0 && *line > ' ') origProc[p++] = *line++;
           origProc[p] = 0;
           while (*line == ' ') line++;
           if (p > 0 && *line != 0) {
+            /* Expected during relaxation iteration -- this exact branch
+             * will be excluded and the round retried, so no per-branch
+             * "Error:" here; printing one made routine iteration look
+             * like a failing link. runRelaxedLink()'s own per-round
+             * summary (and, if it ever comes to that, the "did not
+             * converge" message) already carries the real signal. */
             getHex(line, &origOff);
             rlxRecordFailure(rlxCurOrigFile, origProc, origOff);
           } else {
             /* No original-branch identity to record -- this '<' wasn't
              * one of relax.c's own shrink candidates (a genuine hand-
              * written short branch instead), so there's nothing an
-             * exclude-and-retry round could do about it. Fatal. */
+             * exclude-and-retry round could do about it. Fatal --
+             * surface it, unlike the expected "will retry" case above. */
+            printf("Error: Short branch out of page at %04x\n", addr + offset);
             shortBranchFatal = 1;
           }
         }

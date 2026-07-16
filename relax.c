@@ -100,6 +100,22 @@ static int rlxNumExcluded = 0;
 static RlxKey rlxFailedThisRound[RLX_MAX_EXCL];
 static int rlxNumFailedThisRound = 0;
 
+/* Default since 2026-07-15 (was an opt-in experiment before that):
+ * exclude only the FIRST branch that failed this round, instead of the
+ * whole batch, before retrying. Batch exclusion can over-exclude -- if
+ * branches A/B/C all fail together in one round, only A might be the
+ * real cause (B/C could have fit once A alone was excluded and
+ * everything downstream shifted), but batch exclusion never finds that
+ * out, since it always excludes all three at once. Measured on the
+ * ELF-DOS kernel (346 candidate branches): one-at-a-time shrinks 24
+ * more of them than batch exclusion (252 vs 228) for about 0.1 extra
+ * seconds of build time (95 rounds vs 4) -- a real win at negligible
+ * cost, not just a theoretical one. RLX_BATCH_EXCLUDE (any value) opts
+ * back into the old all-at-once behavior, in case a future, much
+ * larger program ever makes the round count a real problem. See
+ * runRelaxedLink(). */
+static int rlxOneAtATime = 1;
+
 static int rlxKeyEq(RlxKey *a, RlxKey *b) {
   return strcmp(a->fileName, b->fileName) == 0 &&
          strcmp(a->procName, b->procName) == 0 &&
@@ -655,6 +671,7 @@ int runRelaxedLink() {
     char *envMax = getenv("RLX_MAX_SHRINK");
     rlxShrinkBudget = envMax ? atoi(envMax) : -1;
   }
+  rlxOneAtATime = getenv("RLX_BATCH_EXCLUDE") == NULL;
 
   for (round = 0; round < RLX_MAX_ROUNDS; round++) {
     int ok;
@@ -700,9 +717,14 @@ int runRelaxedLink() {
       }
       break;
     }
-    for (i = 0; i < rlxNumFailedThisRound; i++) {
+    if (rlxOneAtATime) {
       if (rlxNumExcluded < RLX_MAX_EXCL)
-        rlxExcluded[rlxNumExcluded++] = rlxFailedThisRound[i];
+        rlxExcluded[rlxNumExcluded++] = rlxFailedThisRound[0];
+    } else {
+      for (i = 0; i < rlxNumFailedThisRound; i++) {
+        if (rlxNumExcluded < RLX_MAX_EXCL)
+          rlxExcluded[rlxNumExcluded++] = rlxFailedThisRound[i];
+      }
     }
     if (round == RLX_MAX_ROUNDS - 1) {
       printf("Error: branch relaxation did not converge after %d rounds\n",
