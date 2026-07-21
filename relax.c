@@ -692,9 +692,6 @@ int runRelaxedLink() {
     quiet = -1;
     ok = rlxLinkOnce(tmpPaths, origNames, numObjects);
     quiet = origQuiet;
-    if (!quiet)
-      printf("Relax round %d: %d branch(es) failed out-of-page check\n",
-             round, rlxNumFailedThisRound);
     if (shortBranchFatal) {
       /* A '<' failed with no original-branch identity to exclude and
        * retry -- a genuine hand-written short branch that's out of
