@@ -628,12 +628,62 @@ static int rlxLinkOnce(char **paths, char **origNames, int numPaths) {
   return numReferences == 0;
 }
 
+/* ---- Cross-platform temp-file support ----
+ *
+ * /tmp is a Unix-only convention -- Windows has no such fixed path;
+ * TEMP/TMP (checked in that order, matching Windows' own documented
+ * lookup order for %TEMP%/%TMP%) are the real per-user/per-machine
+ * temp locations there instead. TMPDIR is the closest Unix analogue
+ * (not always set, hence the /tmp fallback -- unchanged behavior from
+ * before this existed). Falls back to "." only if the platform's own
+ * usual environment variables are entirely absent, which in practice
+ * should only happen in a stripped-down environment missing them.
+ */
+#if defined(_WIN32) || defined(_WIN64)
+#define RLX_PATHSEP "\\"
+#else
+#define RLX_PATHSEP "/"
+#endif
+
+static const char *rlxTempDir() {
+  char *dir;
+#if defined(_WIN32) || defined(_WIN64)
+  dir = getenv("TEMP");
+  if (dir == NULL) dir = getenv("TMP");
+  if (dir == NULL) dir = ".";
+#else
+  dir = getenv("TMPDIR");
+  if (dir == NULL) dir = "/tmp";
+#endif
+  return dir;
+}
+
+/* Portable file copy, used only by the RLX_KEEP_TEMP debug path below
+ * -- replaces a previous system("cp %s %s") call, which depended on a
+ * Unix-only external command and would have needed a second,
+ * separately-tested Windows equivalent (e.g. "copy") instead of one
+ * implementation that works everywhere this program already runs. */
+static void rlxCopyFile(const char *src, const char *dst) {
+  FILE *in, *out;
+  char buf[4096];
+  size_t n;
+  in = fopen(src, "rb");
+  if (in == NULL) return;
+  out = fopen(dst, "wb");
+  if (out == NULL) { fclose(in); return; }
+  while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+    fwrite(buf, 1, n, out);
+  fclose(in);
+  fclose(out);
+}
+
 /* ---- Outer driver, called from main() when -r is given ---- */
 
 int runRelaxedLink() {
   RlxFileData *files;
   char **tmpPaths;
   char **origNames;
+  const char *tmpDir;
   int i, round;
   int origQuiet;
   int totalCandidates, totalShrunk;
@@ -642,13 +692,20 @@ int runRelaxedLink() {
   tmpPaths = (char **)malloc(sizeof(char *) * numObjects);
   origNames = (char **)malloc(sizeof(char *) * numObjects);
 
+  tmpDir = rlxTempDir();
   for (i = 0; i < numObjects; i++) {
     if (rlxParseFile(objects[i], &files[i]) < 0) {
       printf("Errors: aborting link\n");
       exit(1);
     }
-    tmpPaths[i] = (char *)malloc(64);
-    sprintf(tmpPaths[i], "/tmp/link02_relax_%d_%d.prg", (int)getpid(), i);
+    /* sized to the ACTUAL temp dir length, not a fixed guess -- a
+     * real-world Windows %TEMP% (e.g.
+     * C:\Users\SomeLongUserName\AppData\Local\Temp) can easily run
+     * past what the old fixed 64-byte buffer (sized for "/tmp/..."
+     * alone) had room for. */
+    tmpPaths[i] = (char *)malloc(strlen(tmpDir) + 64);
+    sprintf(tmpPaths[i], "%s%slink02_relax_%d_%d.prg", tmpDir,
+            RLX_PATHSEP, (int)getpid(), i);
     origNames[i] = files[i].origName;
   }
 
@@ -683,10 +740,11 @@ int runRelaxedLink() {
     }
     if (getenv("RLX_KEEP_TEMP") != NULL) {
       for (i = 0; i < numObjects; i++) {
-        char keep[128], cmd[256];
-        sprintf(keep, "/tmp/relax_round%d_%d.prg", round, i);
-        sprintf(cmd, "cp %s %s", tmpPaths[i], keep);
-        system(cmd);
+        char *keep = (char *)malloc(strlen(tmpDir) + 64);
+        sprintf(keep, "%s%srelax_round%d_%d.prg", tmpDir, RLX_PATHSEP,
+                round, i);
+        rlxCopyFile(tmpPaths[i], keep);
+        free(keep);
       }
     }
     quiet = -1;
