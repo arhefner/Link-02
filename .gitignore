@@ -1,8 +1,7 @@
 link02
-link02.exe
-tutorial.doc
 *.o
 *.obj
+*.exe
 *.prg
 *.asm
 .vscode
