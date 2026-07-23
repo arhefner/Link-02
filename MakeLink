@@ -1,0 +1,30 @@
+# Compiler and Flags
+CC = cl.exe
+LINK = link.exe
+CFLAGS = /nologo /EHsc /O2
+LFLAGS = /nologo
+
+# Target executable
+TARGET = link02.exe
+
+# Object files derived from sources
+OBJS = main.obj relax.obj
+
+# Default target
+all: $(TARGET)
+
+# Linking the executable
+$(TARGET): $(OBJS)
+    $(LINK) $(LFLAGS) /OUT:$(TARGET) $(OBJS)
+
+# Compilation rule for main.obj (depends on header.h)
+main.obj: main.c header.h
+    $(CC) $(CFLAGS) /c main.c
+
+# Compilation rule for relax.obj (depends on header.h)
+relax.obj: relax.c header.h
+    $(CC) $(CFLAGS) /c relax.c
+
+# Clean up build files
+clean:
+    del /Q $(OBJS) $(TARGET) 2>NUL
