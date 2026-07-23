@@ -1,6 +1,8 @@
 link02
+link02.exe
 tutorial.doc
 *.o
+*.obj
 *.prg
 *.asm
 .vscode
@@ -12,3 +14,5 @@ tutorial.doc
 *.lnk
 *.build
 *.lib
+*.zip
+*.tar.gz
