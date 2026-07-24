@@ -101,6 +101,7 @@ LINK char rlxCurOrigFile[1024];
  * output is written once this is set. */
 LINK int shortBranchFatal;
 
+FILE *findInputFile(char *filename, int isLibrary);
 int loadFile(char *filename);
 int doLink();
 char *getHex(char *line, word *value);

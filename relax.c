@@ -160,7 +160,15 @@ static int rlxParseFile(char *filename, RlxFileData *fd) {
   int inProc = 0;
   RlxSegment *seg;
 
-  f = fopen(filename, "r");
+  /* isLibrary=0: rlxParseFile() is only ever called for object files
+   * (see runRelaxedLink()'s own call site, objects[i]) -- a -r pass
+   * still loads *library* files via a direct loadFile() call in
+   * rlxLinkOnce(), which already searches -L paths correctly. Before
+   * this fix, this was a bare fopen(filename, "r") with no fallback
+   * to the -I search path at all, so any object file that wasn't in
+   * the current directory failed here even though a plain (non-
+   * relaxed) build of the same command line found it fine. */
+  f = findInputFile(filename, 0);
   if (f == NULL) {
     printf("Could not open input file: %s\n", filename);
     return -1;

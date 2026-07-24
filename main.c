@@ -121,12 +121,66 @@ word adjust(word address, char *bound) {
   return address;
 }
 
+/* findInputFile: search for 'filename' the exact way loadFile() has
+ * always searched for one -- first as given (relative to the current
+ * directory), then via the -L library search path (isLibrary != 0)
+ * or the -I include/object search path (isLibrary == 0), in the
+ * order each -I/-L was given on the command line. Split out of
+ * loadFile() itself (2026-07-23) so rlxParseFile() (relax.c, used for
+ * a -r relaxation pass) can search the same paths for an object file
+ * instead of only ever trying the current directory -- previously a
+ * -r build failed with "Could not open input file" for any object
+ * file that wasn't in the current directory, even though a plain
+ * (non-relaxed) build of the exact same command line found it fine
+ * via -I. Deliberately does NOT print any error message itself: the
+ * two real messages ("Could not open library file: %s" / "Could not
+ * open input file: %s") differ by caller, and rlxParseFile() is only
+ * ever called for object files (isLibrary always 0 there -- see its
+ * own header comment; a -r pass still loads *library* files via a
+ * direct loadFile() call in rlxLinkOnce(), which already searches
+ * libPath correctly, so this fix's real scope is object files only).
+ * Returns an open FILE*, or NULL if every attempt failed.
+ */
+FILE *findInputFile(char *filename, int isLibrary) {
+  char buffer[1024];
+  char path[2048];
+  FILE *file;
+  int i;
+
+  file = fopen(filename, "r");
+  if (file != NULL) return file;
+
+  if (isLibrary) {
+    strcpy(buffer, LIBPATH);
+    strcat(buffer, filename);
+    file = fopen(buffer, "r");
+    if (file != NULL) return file;
+
+    for (i = 0; i < numLibPath; i++) {
+      strcpy(path, libPath[i]);
+      if (path[strlen(path) - 1] != '/') strcat(path, "/");
+      strcat(path, filename);
+      file = fopen(path, "r");
+      if (file != NULL) return file;
+    }
+  } else {
+    for (i = 0; i < numIncPath; i++) {
+      strcpy(path, incPath[i]);
+      if (path[strlen(path) - 1] != '/') strcat(path, "/");
+      strcat(path, filename);
+      file = fopen(path, "r");
+      if (file != NULL) return file;
+    }
+  }
+
+  return NULL;
+}
+
 int loadFile(char *filename) {
   int i;
   int j;
   char buffer[1024];
   char token[256];
-  char path[2048];
   int pos;
   int flag;
   FILE *file;
@@ -140,44 +194,14 @@ int loadFile(char *filename) {
   if (!quiet && !createSym && (libScan == 0)) printf("Linking: %s\n", filename);
   inProc = 0;
   offset = 0;
-  file = fopen(filename, "r");
+  file = findInputFile(filename, libScan != 0);
   if (file == NULL) {
     if (libScan != 0) {
-      strcpy(buffer, LIBPATH);
-      strcat(buffer, filename);
-      file = fopen(buffer, "r");
-      if (file == NULL) {
-        i = 0;
-        while (i < numLibPath) {
-          strcpy(path, libPath[i]);
-          if (path[strlen(path) - 1] != '/') strcat(path, "/");
-          strcat(path, filename);
-          //grw - changed to open path instead of buffer
-          file = fopen(path, "r");
-          if (file != NULL) i = numLibPath;
-          i++;
-        }
-        if (file == NULL) {
-          printf("Could not open library file: %s\n", filename);
-          return -1;
-        }
-      }
+      printf("Could not open library file: %s\n", filename);
     } else {
-      i = 0;
-      while (i < numIncPath) {
-        strcpy(path, incPath[i]);
-        if (path[strlen(path) - 1] != '/') strcat(path, "/");
-        strcat(path, filename);
-        //grw - changed to open path instead of buffer
-        file = fopen(path, "r");
-        if (file != NULL) i = numIncPath;
-        i++;
-      }
-      if (file == NULL) {
-        printf("Could not open input file: %s\n", filename);
-        return -1;
-      }
+      printf("Could not open input file: %s\n", filename);
     }
+    return -1;
   }
   while (fgets(buffer, 1023, file) != NULL) {
     line = buffer;
