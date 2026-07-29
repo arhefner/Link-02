@@ -44,12 +44,37 @@
 
 #include "header.h"
 
-#define RLX_MAX_PROC_BYTES  8192
+/* 65536, not a guessed "big enough" constant: the CDP1802 has a 16-bit
+ * address space, so a single proc's byte content can never legitimately
+ * exceed it -- matches word's own domain exactly. Found too small at its
+ * original value of 8192 (2026-07-30): every one of the ELFC compiler's
+ * own "ptest" test programs compiles its entire test body into ONE proc
+ * (8520-10529 bytes, all comfortably real, valid programs), and every
+ * unguarded write derived from an offset into that oversized proc (see
+ * the several "Modifies:"-adjacent RLX_MAX_PROC_BYTES bounds checks added
+ * the same day in rlxEmitProc, rlxParseFile) either silently corrupted
+ * heap memory (a segfault later, sometimes much later) or overran the
+ * STACK-allocated nbytes[]/ndefined[] scratch buffers in rlxEmitProc
+ * (glibc's own stack-smashing detector catching it, sometimes) --
+ * library-code relaxation (2026-07-29) is what first made -r practical
+ * enough for real ELFC builds to reach this limit at all; nothing in
+ * ELF-DOS's own kernel, whose procs are all far smaller, had ever
+ * exercised it. */
+#define RLX_MAX_PROC_BYTES  65536
 #define RLX_MAX_PROC_FIXUPS 2048
 #define RLX_MAX_SEGMENTS    8192
 #define RLX_MAX_EXCL        8192
 #define RLX_LINE_LEN        1024
-#define RLX_MAX_ROUNDS      200
+/* Was the everyday round cap (200) until 2026-07-30 -- now an absolute
+ * safety ceiling only, expected to never actually be hit; see the real,
+ * derived-from-totalCandidates cap computed in runRelaxedLink() (the
+ * `maxRounds` local) for what actually governs a normal build. Kept
+ * large-but-finite rather than removed entirely, in case the proof
+ * behind that derivation ever turns out to have a flaw -- a build that
+ * hits this would mean something is genuinely wrong (a real bug, not
+ * "just needs more rounds"), and should fail with a clear report rather
+ * than spin unbounded. */
+#define RLX_MAX_ROUNDS      100000
 
 typedef struct {
   char type;        /* '#','!','+','^','v','?','/','\\','=','<' */
@@ -258,6 +283,32 @@ static int rlxUniqueLibFiles(char **out, int max) {
 
 /* ---- Parsing ---- */
 
+/* Both of these guard a fixed-size array whose write site had no bounds
+ * check at all before 2026-07-30 (see RLX_MAX_PROC_BYTES's own comment
+ * for the real crash this class of bug caused once library-code
+ * relaxation started exercising much larger real-world input than
+ * anything previously exercised through this file). A silent truncation
+ * here would produce a WRONG binary that appears to link successfully --
+ * far worse than a clean, diagnosable fatal error, so both fail loudly
+ * rather than dropping content. */
+static void rlxCheckFixupCapacity(char *filename, RlxProc *proc) {
+  if (proc->numFixups >= RLX_MAX_PROC_FIXUPS) {
+    printf("Error: proc '%s' in %s has more than %d fixups (internal "
+           "limit RLX_MAX_PROC_FIXUPS) -- rebuild link02 with a larger "
+           "limit\n", proc->name, filename, RLX_MAX_PROC_FIXUPS);
+    exit(1);
+  }
+}
+
+static void rlxCheckSegmentCapacity(char *filename, RlxFileData *fd) {
+  if (fd->numSegs >= RLX_MAX_SEGMENTS) {
+    printf("Error: %s has more than %d segments (internal limit "
+           "RLX_MAX_SEGMENTS) -- rebuild link02 with a larger limit\n",
+           filename, RLX_MAX_SEGMENTS);
+    exit(1);
+  }
+}
+
 static int rlxParseFile(char *filename, RlxFileData *fd, int isLibrary) {
   FILE *f;
   char buffer[RLX_LINE_LEN];
@@ -297,6 +348,7 @@ static int rlxParseFile(char *filename, RlxFileData *fd, int isLibrary) {
       pos = 0;
       while (*line != 0 && *line > ' ') token[pos++] = *line++;
       token[pos] = 0;
+      rlxCheckSegmentCapacity(filename, fd);
       seg = &fd->segs[fd->numSegs];
       seg->isProc = 1;
       seg->parentProc[0] = 0; /* unused for an isProc segment -- proc->name
@@ -335,6 +387,12 @@ static int rlxParseFile(char *filename, RlxFileData *fd, int isLibrary) {
         while (*line > 0 && *line <= ' ') line++;
         if (*line != 0) {
           line = getHex(line, &value);
+          /* curpos is a word (0-65535), the same domain
+           * RLX_MAX_PROC_BYTES=65536 now covers exactly -- gcc correctly
+           * flags this comparison as always-true. Kept anyway: cheap,
+           * correct defense-in-depth against a future shrink of that
+           * constant reintroducing exactly the class of bug this file's
+           * 2026-07-30 fixes exist to close out. */
           if (curpos < RLX_MAX_PROC_BYTES) {
             proc->bytes[curpos] = value & 0xff;
             proc->defined[curpos] = 1;
@@ -350,6 +408,7 @@ static int rlxParseFile(char *filename, RlxFileData *fd, int isLibrary) {
       char t = *line;
       line++;
       line = getHex(line, &addr);
+      rlxCheckFixupCapacity(filename, proc);
       proc->fixups[proc->numFixups].type = t;
       proc->fixups[proc->numFixups].offset = addr;
       proc->numFixups++;
@@ -358,6 +417,7 @@ static int rlxParseFile(char *filename, RlxFileData *fd, int isLibrary) {
       line = getHex(line, &addr);
       while (*line == ' ') line++;
       getHex(line, &lofs);
+      rlxCheckFixupCapacity(filename, proc);
       proc->fixups[proc->numFixups].type = '^';
       proc->fixups[proc->numFixups].offset = addr;
       proc->fixups[proc->numFixups].lofs = lofs;
@@ -365,6 +425,7 @@ static int rlxParseFile(char *filename, RlxFileData *fd, int isLibrary) {
     } else if (inProc && *line == 'v') {
       line++;
       line = getHex(line, &addr);
+      rlxCheckFixupCapacity(filename, proc);
       proc->fixups[proc->numFixups].type = 'v';
       proc->fixups[proc->numFixups].offset = addr;
       proc->numFixups++;
@@ -375,6 +436,7 @@ static int rlxParseFile(char *filename, RlxFileData *fd, int isLibrary) {
        * renumber the patch offset, leaving the byte value untouched. */
       line++;
       line = getHex(line, &addr);
+      rlxCheckFixupCapacity(filename, proc);
       proc->fixups[proc->numFixups].type = '<';
       proc->fixups[proc->numFixups].offset = addr;
       proc->numFixups++;
@@ -386,6 +448,7 @@ static int rlxParseFile(char *filename, RlxFileData *fd, int isLibrary) {
       token[pos] = 0;
       while (*line == ' ') line++;
       getHex(line, &value);
+      rlxCheckFixupCapacity(filename, proc);
       proc->fixups[proc->numFixups].type = t;
       strcpy(proc->fixups[proc->numFixups].name, token);
       proc->fixups[proc->numFixups].offset = value;
@@ -399,6 +462,7 @@ static int rlxParseFile(char *filename, RlxFileData *fd, int isLibrary) {
       line = getHex(line, &value);
       while (*line == ' ') line++;
       getHex(line, &low);
+      rlxCheckFixupCapacity(filename, proc);
       proc->fixups[proc->numFixups].type = '/';
       strcpy(proc->fixups[proc->numFixups].name, token);
       proc->fixups[proc->numFixups].offset = value;
@@ -411,6 +475,7 @@ static int rlxParseFile(char *filename, RlxFileData *fd, int isLibrary) {
       token[pos] = 0;
       while (*line == ' ') line++;
       getHex(line, &value);
+      rlxCheckFixupCapacity(filename, proc);
       proc->fixups[proc->numFixups].type = '=';
       strcpy(proc->fixups[proc->numFixups].name, token);
       proc->fixups[proc->numFixups].offset = value;
@@ -429,6 +494,7 @@ static int rlxParseFile(char *filename, RlxFileData *fd, int isLibrary) {
        * unmodified, non-relaxed loadFile() path already links this
        * project's own reported repro fine with it positioned either
        * way). */
+      rlxCheckSegmentCapacity(filename, fd);
       seg = &fd->segs[fd->numSegs];
       seg->isProc = 0;
       strcpy(seg->rawLine, buffer);
@@ -471,11 +537,23 @@ static word rlxRemap(word p, word *removed, int numRemoved) {
  * a synthetic test: it produced a bogus "collision" warning and, more
  * seriously, would resolve a kept-long branch against a stale value
  * whenever its true target happened to be nonzero. */
+/* nbytes/ndefined used to be plain stack locals -- harmless at the
+ * original RLX_MAX_PROC_BYTES=8192 (16KB combined) but a needlessly
+ * large ~128KB stack frame at the new 65536 value (see that constant's
+ * own comment). static is safe here: rlxEmitProc is never called
+ * concurrently or recursively (this is a single-threaded, sequential
+ * regenerate-one-proc-at-a-time pipeline), and ndefined is explicitly
+ * memset(0) at the top of every call regardless, so nothing depends on
+ * either buffer's content surviving -- or NOT surviving -- between
+ * calls. */
+static byte rlxEmitNbytes[RLX_MAX_PROC_BYTES];
+static byte rlxEmitNdefined[RLX_MAX_PROC_BYTES];
+
 static void rlxEmitProc(FILE *out, char *origFile, RlxProc *orig,
                          word *shrink, int numShrink) {
   word removed[RLX_MAX_PROC_FIXUPS];
-  byte nbytes[RLX_MAX_PROC_BYTES];
-  byte ndefined[RLX_MAX_PROC_BYTES];
+  byte *nbytes = rlxEmitNbytes;
+  byte *ndefined = rlxEmitNdefined;
   char fixupText[RLX_MAX_PROC_FIXUPS][80];
   int numFixupText = 0;
   word newSize;
@@ -487,7 +565,11 @@ static void rlxEmitProc(FILE *out, char *origFile, RlxProc *orig,
   for (i = 0; i < numShrink; i++) removed[i] = shrink[i];
 
   newSize = rlxRemap(orig->size, removed, numShrink);
-  memset(ndefined, 0, sizeof(ndefined));
+  /* ndefined is now `byte *`, not an array -- sizeof(ndefined) would give
+   * the pointer's own size (8 on a 64-bit build), not the buffer's, since
+   * the static-buffer change above. Use the real static array's size
+   * explicitly instead. */
+  memset(ndefined, 0, sizeof(rlxEmitNdefined));
 
   for (p = 0; p < orig->size; p++) {
     int isRemoved = 0;
@@ -500,6 +582,9 @@ static void rlxEmitProc(FILE *out, char *origFile, RlxProc *orig,
       byte v = orig->bytes[p];
       for (i = 0; i < numShrink; i++)
         if (removed[i] == (word)(p + 1)) { v = (byte)(v - 0x90); break; }
+      /* np is a word -- see the matching comment on the ':' parse-side
+       * check above for why this is now always true, and why it's kept
+       * anyway. */
       if (np < RLX_MAX_PROC_BYTES) {
         nbytes[np] = v;
         ndefined[np] = 1;
@@ -513,6 +598,21 @@ static void rlxEmitProc(FILE *out, char *origFile, RlxProc *orig,
 
     if (fx->type == '#') {
       int shrinking = 0;
+      /* fx->offset+1 is computed as int (word promotes), so this catches
+       * the one theoretical edge RLX_MAX_PROC_BYTES=65536 doesn't rule
+       * out by construction: a 2-byte field whose low byte would sit at
+       * proc-relative offset 65536, i.e. a fixup positioned at the very
+       * last valid byte (65535) of a proc that uses the FULL 16-bit
+       * address space. Not achievable by any real, valid 1802 program
+       * (there's no address 65536 to reference), so this can only mean
+       * malformed/corrupted .prg input -- fail loudly rather than read
+       * or write one byte past the end of a fixed buffer. */
+      if ((int)fx->offset + 1 >= RLX_MAX_PROC_BYTES) {
+        printf("Error: proc '%s' in %s: fixup offset %04x has no room "
+               "for its 2-byte field within the 16-bit address space\n",
+               orig->name, origFile, fx->offset);
+        exit(1);
+      }
       for (j = 0; j < numShrink; j++)
         if (shrink[j] == fx->offset) { shrinking = 1; break; }
       {
@@ -550,6 +650,14 @@ static void rlxEmitProc(FILE *out, char *origFile, RlxProc *orig,
         }
       }
     } else if (fx->type == '+') {
+      /* Same theoretical edge as the '#' case just above -- see its own
+       * comment. */
+      if ((int)fx->offset + 1 >= RLX_MAX_PROC_BYTES) {
+        printf("Error: proc '%s' in %s: fixup offset %04x has no room "
+               "for its 2-byte field within the 16-bit address space\n",
+               orig->name, origFile, fx->offset);
+        exit(1);
+      }
       word targetOrig = (word)((orig->bytes[fx->offset] << 8) |
                                 orig->bytes[fx->offset + 1]);
       word targetNew = rlxRemap(targetOrig, removed, numShrink);
@@ -652,7 +760,6 @@ static void rlxEmitProc(FILE *out, char *origFile, RlxProc *orig,
   for (i = 0; i < numFixupText; i++) fputs(fixupText[i], out);
 
   fprintf(out, "}\n");
-  (void)origFile;
 }
 
 /* Debug/bisection aid: RLX_MAX_SHRINK=N caps the total number of branches
@@ -875,6 +982,7 @@ int runRelaxedLink() {
   char **origNames;
   const char *tmpDir;
   int i, round;
+  int maxRounds;
   int origQuiet;
   int totalCandidates, totalShrunk;
   static char *libFiles[RLX_MAX_DISCOVERED];
@@ -945,7 +1053,39 @@ int runRelaxedLink() {
   }
   rlxOneAtATime = getenv("RLX_BATCH_EXCLUDE") == NULL;
 
-  for (round = 0; round < RLX_MAX_ROUNDS; round++) {
+  /* Round cap derived from totalCandidates, not a fixed guess -- found
+   * genuinely too low at RLX_MAX_ROUNDS=200 (2026-07-30): several real
+   * ELFC test programs need 200-220+ rounds once library-code relaxation
+   * (2026-07-29) made their real candidate pool far bigger than anything
+   * -r had been exercised against before (up to ~800 candidates for a
+   * single moderately-sized program, vs. ~350 for ELF-DOS's whole
+   * kernel). This isn't a guess at "big enough" either -- it's a real
+   * upper bound, provable from how the round loop itself works: a round
+   * only continues (rlxNumFailedThisRound > 0) if at least one branch
+   * failed, and rlxEmitFile() only ever offers a branch as a shrink
+   * candidate if it's NOT already in rlxExcluded[] -- so a round that
+   * doesn't converge is GUARANTEED to add at least one branch to
+   * rlxExcluded[] that was never there before (one-at-a-time picks
+   * exactly one; batch-exclude picks every failure that round, all of
+   * them also new by the same argument). rlxExcluded[] only ever grows,
+   * never shrinks, and can never hold more than totalCandidates entries
+   * (every '#' fixup is a candidate at most once) -- so the round loop
+   * MUST converge within totalCandidates rounds of net exclusion
+   * progress, plus one final round to confirm zero failures. Verified
+   * empirically before trusting this, not just algebraically: rebuilt
+   * with a much larger fixed cap (20000) and confirmed all three
+   * previously-non-converging ELFC test programs (fptest2/4/5) do
+   * converge cleanly, each within a couple of rounds of their own
+   * totalCandidates (211/212/218 rounds against 790/817/785 candidates)
+   * -- no oscillation, nothing pathological, just a cap that was too
+   * tight. RLX_MAX_ROUNDS itself is kept only as an absolute sanity
+   * ceiling below, in case this proof has a flaw not yet found. */
+  {
+    int derivedCap = totalCandidates + 2;
+    maxRounds = derivedCap < RLX_MAX_ROUNDS ? derivedCap : RLX_MAX_ROUNDS;
+  }
+
+  for (round = 0; round < maxRounds; round++) {
     int ok;
     rlxNumFailedThisRound = 0;
     rlxShrinkRemaining = rlxShrinkBudget;
@@ -987,18 +1127,45 @@ int runRelaxedLink() {
       }
       break;
     }
+    /* Silently declining to record an exclusion here (the old behavior,
+     * pre-2026-07-30, when rlxNumExcluded reached RLX_MAX_EXCL) would
+     * break the very convergence guarantee maxRounds's own derivation
+     * above depends on: a round that fails MUST grow rlxExcluded[] by at
+     * least one previously-unseen entry, or the same branch just keeps
+     * failing forever with nothing tracking it as excluded. Fail loudly
+     * instead -- this can only mean totalCandidates itself exceeded
+     * RLX_MAX_EXCL, a real, reportable limit, not silent non-progress. */
     if (rlxOneAtATime) {
-      if (rlxNumExcluded < RLX_MAX_EXCL)
-        rlxExcluded[rlxNumExcluded++] = rlxFailedThisRound[0];
+      if (rlxNumExcluded >= RLX_MAX_EXCL) {
+        printf("Error: more than %d branches need to stay long (internal "
+               "limit RLX_MAX_EXCL) -- rebuild link02 with a larger "
+               "limit\n", RLX_MAX_EXCL);
+        exit(1);
+      }
+      rlxExcluded[rlxNumExcluded++] = rlxFailedThisRound[0];
     } else {
       for (i = 0; i < rlxNumFailedThisRound; i++) {
-        if (rlxNumExcluded < RLX_MAX_EXCL)
-          rlxExcluded[rlxNumExcluded++] = rlxFailedThisRound[i];
+        if (rlxNumExcluded >= RLX_MAX_EXCL) {
+          printf("Error: more than %d branches need to stay long "
+                 "(internal limit RLX_MAX_EXCL) -- rebuild link02 with a "
+                 "larger limit\n", RLX_MAX_EXCL);
+          exit(1);
+        }
+        rlxExcluded[rlxNumExcluded++] = rlxFailedThisRound[i];
       }
     }
-    if (round == RLX_MAX_ROUNDS - 1) {
-      printf("Error: branch relaxation did not converge after %d rounds\n",
-             RLX_MAX_ROUNDS);
+    if (round == maxRounds - 1) {
+      /* Per the derivation above this loop, this should be unreachable
+       * whenever maxRounds came from derivedCap (the totalCandidates-
+       * based bound) rather than the absolute RLX_MAX_ROUNDS ceiling --
+       * reaching it means either totalCandidates itself was implausibly
+       * huge (hit the ceiling) or the convergence proof has a real flaw.
+       * Either way this is a genuine internal error, not "just needs
+       * more rounds", so it's reported as such rather than suggesting a
+       * retry. */
+      printf("Error: branch relaxation did not converge after %d rounds "
+             "(%d candidates) -- this should not happen; please report it\n",
+             maxRounds, totalCandidates);
       exit(1);
     }
   }
