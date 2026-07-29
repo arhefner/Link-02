@@ -80,6 +80,20 @@ typedef struct {
                   * deref segfault, not a checked error -- first real
                   * multi-file run after the synthetic single-proc
                   * tests). */
+  char parentProc[128]; /* Only meaningful for a !isProc (passthrough)
+                          * segment: the name of the proc it was found
+                          * inside, or "" if it wasn't inside any proc.
+                          * Used only when emitting a LIBRARY pseudo-object
+                          * file (see rlxEmitFile's isLibraryFile mode) to
+                          * decide whether an in-proc directive like
+                          * ".requires" should survive -- it should only if
+                          * its own enclosing proc was itself discovered/
+                          * kept, exactly mirroring loadFile()'s own
+                          * loadModule-gated handling of ".requires" (see
+                          * that function's header comment in main.c). A
+                          * ".library" line is the one exception: it's
+                          * NEVER gated by loadModule in loadFile(), so it
+                          * always survives regardless of parentProc. */
 } RlxSegment;
 
 typedef struct {
@@ -146,9 +160,105 @@ void rlxRecordFailure(char *origFile, char *procName, word origOffset) {
   rlxFailedThisRound[rlxNumFailedThisRound++] = k;
 }
 
+/* ---- Library-code relaxation: discovery pass ----
+ *
+ * -r's regenerate-and-relink pipeline only ever handled OBJECT files --
+ * library (.lib) files were always loaded through main.c's own unmodified
+ * loadFile()/selective-scan path, so library-sourced branches were never
+ * shrink candidates even when object-file code right next to them got
+ * shrunk. Since library code is often the bulk of a real program's
+ * instruction count, this leaves a lot of -r's benefit unrealized.
+ *
+ * Fix: before the relaxation round loop starts, run one ordinary,
+ * completely unmodified link (rlxRunDiscoveryPass(), below) so the
+ * existing loadFile()/doLink()/library-scan machinery determines the real
+ * closure of library procs THIS program needs -- exactly what a plain,
+ * non-relaxed build would determine. While that pass runs, the two
+ * existing "Linking %s from library" print sites in loadFile() (main.c)
+ * also call rlxRecordDiscovered() (only when rlxDiscovering is set, so
+ * this has zero effect outside a -r build) to capture the (library file,
+ * proc name) pair. The resulting rlxDiscovered[] list is then used to
+ * build "library pseudo-object files" -- the referenced library files,
+ * re-parsed with the same rlxParseFile() used for objects, but filtered
+ * at emission time (see rlxEmitFile()'s isLibraryFile mode) to include
+ * ONLY discovered procs -- merged into the same files[]/tmpPaths[]/
+ * origNames[] arrays object files already use, so the existing round
+ * loop, exclusion tracking, and rlxLinkOnce() all apply completely
+ * unchanged.
+ *
+ * Discovery MUST run with rlxActive == 0 (i.e. strictly before
+ * runRelaxedLink() sets it to 1): loadFile()'s '<' handler branches on
+ * rlxActive to decide whether to expect the extra fields a relaxation-
+ * generated '<' line carries (full target, original proc name/offset) --
+ * a discovery-pass load is reading ORIGINAL, unregenerated object/library
+ * text, exactly what a plain build would see, and a genuine hand-written
+ * short branch in that text has none of those extra fields. */
+
+#define RLX_MAX_DISCOVERED 8192   /* matches RLX_MAX_EXCL/RLX_MAX_SEGMENTS */
+
+typedef struct {
+  char libFile[1024];
+  char procName[128];
+} RlxDiscoveredProc;
+
+static RlxDiscoveredProc rlxDiscovered[RLX_MAX_DISCOVERED];
+static int rlxNumDiscovered = 0;
+
+/* Called from loadFile() (main.c), only while rlxDiscovering is set. */
+void rlxRecordDiscovered(char *libFile, char *procName) {
+  int i;
+  if (libFile == NULL || procName == NULL) return;
+  for (i = 0; i < rlxNumDiscovered; i++)
+    if (strcmp(rlxDiscovered[i].libFile, libFile) == 0 &&
+        strcmp(rlxDiscovered[i].procName, procName) == 0)
+      return;
+  if (rlxNumDiscovered >= RLX_MAX_DISCOVERED) {
+    /* A warning, not a silent truncation -- omitting a proc here means
+     * omitting real, needed code from the library pseudo-object file
+     * built later, not just losing a relaxation opportunity. */
+    printf("Warning: more than %d distinct library procs referenced -- "
+           "some library code will not be relaxation-eligible\n",
+           RLX_MAX_DISCOVERED);
+    return;
+  }
+  strcpy(rlxDiscovered[rlxNumDiscovered].libFile, libFile);
+  strcpy(rlxDiscovered[rlxNumDiscovered].procName, procName);
+  rlxNumDiscovered++;
+}
+
+static int rlxIsDiscovered(char *libFile, char *procName) {
+  int i;
+  for (i = 0; i < rlxNumDiscovered; i++)
+    if (strcmp(rlxDiscovered[i].libFile, libFile) == 0 &&
+        strcmp(rlxDiscovered[i].procName, procName) == 0)
+      return 1;
+  return 0;
+}
+
+/* Collapses rlxDiscovered[] down to the distinct set of library file
+ * names referenced (in first-seen order). Returned pointers alias
+ * rlxDiscovered[]'s own (static, program-lifetime) buffers -- never
+ * freed, matching this file's existing convention for rlxExcluded[]/
+ * rlxFailedThisRound[] never being freed either. */
+static int rlxUniqueLibFiles(char **out, int max) {
+  int i, j, n = 0;
+  for (i = 0; i < rlxNumDiscovered; i++) {
+    int dup = 0;
+    for (j = 0; j < n; j++)
+      if (strcmp(out[j], rlxDiscovered[i].libFile) == 0) { dup = 1; break; }
+    if (!dup) {
+      if (n >= max) continue; /* can't happen given RLX_MAX_DISCOVERED
+                                * sizing at every call site, but guard
+                                * rather than overrun regardless. */
+      out[n++] = rlxDiscovered[i].libFile;
+    }
+  }
+  return n;
+}
+
 /* ---- Parsing ---- */
 
-static int rlxParseFile(char *filename, RlxFileData *fd) {
+static int rlxParseFile(char *filename, RlxFileData *fd, int isLibrary) {
   FILE *f;
   char buffer[RLX_LINE_LEN];
   char *line;
@@ -160,15 +270,19 @@ static int rlxParseFile(char *filename, RlxFileData *fd) {
   int inProc = 0;
   RlxSegment *seg;
 
-  /* isLibrary=0: rlxParseFile() is only ever called for object files
-   * (see runRelaxedLink()'s own call site, objects[i]) -- a -r pass
-   * still loads *library* files via a direct loadFile() call in
-   * rlxLinkOnce(), which already searches -L paths correctly. Before
-   * this fix, this was a bare fopen(filename, "r") with no fallback
-   * to the -I search path at all, so any object file that wasn't in
-   * the current directory failed here even though a plain (non-
-   * relaxed) build of the same command line found it fine. */
-  f = findInputFile(filename, 0);
+  /* isLibrary selects which search path findInputFile() consults after
+   * trying the current directory (-L for a library, -I for an object
+   * file), exactly matching loadFile()'s own convention (findInputFile(f,
+   * libScan != 0)). Object files (runRelaxedLink()'s own objects[i] loop)
+   * always pass 0. Library files discovered by relax.c's own discovery
+   * pass (see rlxRunDiscoveryPass()/rlxUniqueLibFiles()) pass 1, so a
+   * library found via -L (not just the current directory) resolves here
+   * the same way it would in a plain, non-relaxed link. Before isLibrary
+   * existed at all, this was a bare fopen(filename, "r") with no fallback
+   * to any search path, so an object file that wasn't in the current
+   * directory failed here even though a plain build of the same command
+   * line found it fine via -I. */
+  f = findInputFile(filename, isLibrary);
   if (f == NULL) {
     printf("Could not open input file: %s\n", filename);
     return -1;
@@ -185,6 +299,8 @@ static int rlxParseFile(char *filename, RlxFileData *fd) {
       token[pos] = 0;
       seg = &fd->segs[fd->numSegs];
       seg->isProc = 1;
+      seg->parentProc[0] = 0; /* unused for an isProc segment -- proc->name
+                                * is the name that matters here */
       seg->proc = (RlxProc *)malloc(sizeof(RlxProc));
       proc = seg->proc;
       strcpy(proc->name, token);
@@ -316,6 +432,10 @@ static int rlxParseFile(char *filename, RlxFileData *fd) {
       seg = &fd->segs[fd->numSegs];
       seg->isProc = 0;
       strcpy(seg->rawLine, buffer);
+      if (inProc && proc != NULL)
+        strcpy(seg->parentProc, proc->name);
+      else
+        seg->parentProc[0] = 0;
       fd->numSegs++;
     }
   }
@@ -553,7 +673,18 @@ static int rlxActualShrinkCount = 0; /* candidates actually placed in a
                                        * excluded), so it's tracked
                                        * separately for accurate reporting. */
 
-static void rlxEmitFile(char *tmpPath, RlxFileData *fd) {
+/* isLibraryFile: 0 for an object file, emitted exactly as before with no
+ * filtering. 1 for a library pseudo-object file (see the discovery-pass
+ * header comment above rlxDiscovered[]) -- only procs actually present in
+ * rlxDiscovered[] are emitted at all (an undiscovered proc's whole {...}
+ * block is skipped, never a shrink candidate, never even written), and a
+ * passthrough line found INSIDE a proc (in practice, ".requires" -- see
+ * RlxSegment.parentProc's own comment) is only kept if its enclosing proc
+ * was itself discovered/kept. A ".library" line is never gated this way
+ * -- loadFile() itself never gates it on loadModule either (main.c,
+ * confirmed: unlike ".requires", ".library" has no such check), so it
+ * always survives regardless of which proc (if any) it was found inside. */
+static void rlxEmitFile(char *tmpPath, RlxFileData *fd, int isLibraryFile) {
   FILE *out;
   int i, n;
   word shrink[RLX_MAX_PROC_FIXUPS];
@@ -566,6 +697,12 @@ static void rlxEmitFile(char *tmpPath, RlxFileData *fd) {
   for (i = 0; i < fd->numSegs; i++) {
     RlxSegment *seg = &fd->segs[i];
     if (!seg->isProc) {
+      if (isLibraryFile && seg->parentProc[0] != 0) {
+        int isLibDirective = (strncmp(seg->rawLine, ".library ", 9) == 0);
+        if (!isLibDirective &&
+            !rlxIsDiscovered(fd->origName, seg->parentProc))
+          continue;
+      }
       fputs(seg->rawLine, out);
       if (strlen(seg->rawLine) == 0 ||
           seg->rawLine[strlen(seg->rawLine) - 1] != '\n')
@@ -573,6 +710,8 @@ static void rlxEmitFile(char *tmpPath, RlxFileData *fd) {
     } else {
       RlxProc *proc = seg->proc;
       int j;
+      if (isLibraryFile && !rlxIsDiscovered(fd->origName, proc->name))
+        continue;
       n = 0;
       for (j = 0; j < proc->numFixups; j++)
         if (proc->fixups[j].type == '#' &&
@@ -659,6 +798,26 @@ static int rlxLinkOnce(char **paths, char **origNames, int numPaths) {
   return numReferences == 0;
 }
 
+/* Runs one ordinary, fully unmodified link over the real object files
+ * (objects[]/numObjects, both globals set by main()'s own -I/-l/object-
+ * file argument parsing well before doRelax is ever consulted) with
+ * rlxDiscovering set, so every "Linking %s from library" event loadFile()
+ * would normally just print also gets recorded into rlxDiscovered[] (see
+ * that struct's own header comment). Must run before runRelaxedLink()
+ * sets rlxActive = 1 -- see the same header comment for why. */
+static void rlxRunDiscoveryPass() {
+  rlxDiscovering = 1;
+  rlxNumDiscovered = 0;
+  if (!rlxLinkOnce(objects, objects, numObjects)) {
+    int i;
+    for (i = 0; i < numReferences; i++)
+      printf("Error: Symbol %s not found\n", references[i]);
+    printf("Errors during link.  Aborting output\n");
+    exit(1);
+  }
+  rlxDiscovering = 0;
+}
+
 /* ---- Cross-platform temp-file support ----
  *
  * /tmp is a Unix-only convention -- Windows has no such fixed path;
@@ -718,14 +877,25 @@ int runRelaxedLink() {
   int i, round;
   int origQuiet;
   int totalCandidates, totalShrunk;
+  static char *libFiles[RLX_MAX_DISCOVERED];
+  int numLibFiles;
+  int numAllFiles;
 
-  files = (RlxFileData *)malloc(sizeof(RlxFileData) * numObjects);
-  tmpPaths = (char **)malloc(sizeof(char *) * numObjects);
-  origNames = (char **)malloc(sizeof(char *) * numObjects);
+  /* Discovery pass -- see rlxRunDiscoveryPass()'s own header comment.
+   * Must happen before rlxActive is set below, and before files[]/
+   * tmpPaths[]/origNames[] are sized, since numLibFiles isn't known
+   * until this returns. */
+  rlxRunDiscoveryPass();
+  numLibFiles = rlxUniqueLibFiles(libFiles, RLX_MAX_DISCOVERED);
+  numAllFiles = numObjects + numLibFiles;
+
+  files = (RlxFileData *)malloc(sizeof(RlxFileData) * numAllFiles);
+  tmpPaths = (char **)malloc(sizeof(char *) * numAllFiles);
+  origNames = (char **)malloc(sizeof(char *) * numAllFiles);
 
   tmpDir = rlxTempDir();
   for (i = 0; i < numObjects; i++) {
-    if (rlxParseFile(objects[i], &files[i]) < 0) {
+    if (rlxParseFile(objects[i], &files[i], 0) < 0) {
       printf("Errors: aborting link\n");
       exit(1);
     }
@@ -739,14 +909,28 @@ int runRelaxedLink() {
             RLX_PATHSEP, (int)getpid(), i);
     origNames[i] = files[i].origName;
   }
+  for (i = 0; i < numLibFiles; i++) {
+    int idx = numObjects + i;
+    if (rlxParseFile(libFiles[i], &files[idx], 1) < 0) {
+      printf("Errors: aborting link\n");
+      exit(1);
+    }
+    tmpPaths[idx] = (char *)malloc(strlen(tmpDir) + 64);
+    sprintf(tmpPaths[idx], "%s%slink02_relax_%d_%d.prg", tmpDir,
+            RLX_PATHSEP, (int)getpid(), idx);
+    origNames[idx] = files[idx].origName;
+  }
 
   totalCandidates = 0;
-  for (i = 0; i < numObjects; i++) {
+  for (i = 0; i < numAllFiles; i++) {
     int s;
+    int isLib = (i >= numObjects);
     for (s = 0; s < files[i].numSegs; s++)
       if (files[i].segs[s].isProc) {
         int j;
         RlxProc *proc = files[i].segs[s].proc;
+        if (isLib && !rlxIsDiscovered(files[i].origName, proc->name))
+          continue;
         for (j = 0; j < proc->numFixups; j++)
           if (proc->fixups[j].type == '#') totalCandidates++;
       }
@@ -766,11 +950,11 @@ int runRelaxedLink() {
     rlxNumFailedThisRound = 0;
     rlxShrinkRemaining = rlxShrinkBudget;
     rlxActualShrinkCount = 0;
-    for (i = 0; i < numObjects; i++) {
-      rlxEmitFile(tmpPaths[i], &files[i]);
+    for (i = 0; i < numAllFiles; i++) {
+      rlxEmitFile(tmpPaths[i], &files[i], i >= numObjects);
     }
     if (getenv("RLX_KEEP_TEMP") != NULL) {
-      for (i = 0; i < numObjects; i++) {
+      for (i = 0; i < numAllFiles; i++) {
         char *keep = (char *)malloc(strlen(tmpDir) + 64);
         sprintf(keep, "%s%srelax_round%d_%d.prg", tmpDir, RLX_PATHSEP,
                 round, i);
@@ -779,7 +963,7 @@ int runRelaxedLink() {
       }
     }
     quiet = -1;
-    ok = rlxLinkOnce(tmpPaths, origNames, numObjects);
+    ok = rlxLinkOnce(tmpPaths, origNames, numAllFiles);
     quiet = origQuiet;
     if (shortBranchFatal) {
       /* A '<' failed with no original-branch identity to exclude and
@@ -826,7 +1010,7 @@ int runRelaxedLink() {
     printf("Relaxation: %d of %d local long branches shortened (%d rounds)\n",
            totalShrunk, totalCandidates, round + 1);
 
-  for (i = 0; i < numObjects; i++) {
+  for (i = 0; i < numAllFiles; i++) {
     remove(tmpPaths[i]);
     free(tmpPaths[i]);
   }

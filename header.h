@@ -89,6 +89,16 @@ LINK int doRelax;
 LINK int rlxActive;
 LINK char rlxCurOrigFile[1024];
 
+/* Set (only) while relax.c's own discovery pass (an ordinary, unmodified
+ * link run before any relaxation round) is in progress -- lets loadFile()
+ * report, via rlxRecordDiscovered(), exactly which (library file, proc
+ * name) pairs the real link actually pulled in, at the same two points it
+ * already prints "Linking %s from library". This is how relax.c learns
+ * which library procs are relaxation-eligible without loadFile()'s own
+ * selective-inclusion logic needing to change at all. */
+LINK int rlxDiscovering;
+void rlxRecordDiscovered(char *libFile, char *procName);
+
 /* Set by loadFile()'s '<' handler whenever a short-branch out-of-page
  * error is detected AND there's no way to recover from it -- either
  * because -r isn't active at all (no retry mechanism exists outside

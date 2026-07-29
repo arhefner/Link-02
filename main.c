@@ -478,6 +478,7 @@ int loadFile(char *filename) {
               //grw - suppress linking messages when creating sym
               // file
               if (!createSym) printf("Linking %s from library\n", token);
+              if (rlxDiscovering) rlxRecordDiscovered(filename, token);
               i = numReferences;
             }
           if (loadModule == 0) {
@@ -488,6 +489,7 @@ int loadFile(char *filename) {
                 //grw - suppress linking messages when creating
                 // sym file
                 if (!createSym) printf("Linking %s from library\n", token);
+                if (rlxDiscovering) rlxRecordDiscovered(filename, token);
               }
           }
         }
@@ -856,6 +858,7 @@ int main(int argc, char **argv) {
   numIncPath = 0;
   doRelax = 0;
   rlxActive = 0;
+  rlxDiscovering = 0;
   shortBranchFatal = 0;
   tv = time(NULL);
   localtime_r(&tv, &dt);
