@@ -78,6 +78,28 @@ void addReference(char *name, word value, char typ, byte low) {
 }
 
 void addLibrary(char *name) {
+  int i;
+  /* A library can be named more than once -- e.g. a ".library" line is
+   * emitted once per proc that needs it (string.lib declares
+   * ".library ctype.lib" five separate times), and numLibraries/
+   * libraries[] are never reset between relaxation rounds (see
+   * rlxResetLinkState() in relax.c, which deliberately treats the
+   * library SET as invariant across rounds, same as numObjects/
+   * numLibPath/numIncPath). Without this check, each redundant
+   * ".library" line re-appended its target, and since the resolution
+   * loop in rlxLinkOnce() re-scans every entry in libraries[] on every
+   * pass until nothing new resolves, the list's own unchecked growth
+   * compounded across BOTH the inner resolution loop and every one of
+   * a -r build's relaxation rounds -- measured 2026-07-29 on a real
+   * downstream (ELFC) build: ctype.lib alone was being re-loaded and
+   * re-parsed from disk 159,270 times (0 dedup) for what should have
+   * been on the order of a few dozen. Confirmed via a direct three-
+   * way link02 timing comparison that -r's ~190x slowdown for that
+   * build was overwhelmingly attributable to this, not to relaxation's
+   * own iterative regenerate/relink rounds. */
+  for (i = 0; i < numLibraries; i++)
+    if (strcmp(libraries[i], name) == 0) return;
+
   numLibraries++;
   if (numLibraries == 1)
     libraries = (char **)malloc(sizeof(char *));

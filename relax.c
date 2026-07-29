@@ -192,10 +192,22 @@ static int rlxParseFile(char *filename, RlxFileData *fd) {
       memset(proc->defined, 0, sizeof(proc->defined));
       curpos = 0;
       inProc = 1;
+      /* Claim this segment slot NOW, not at the matching '}' below --
+       * see the unconditional passthrough branch's own comment (bottom
+       * of this loop) for why: an unrecognized line encountered WHILE
+       * inProc (e.g. a ".library" directive positioned inside a proc,
+       * found 2026-07-27 via a real downstream link failure) falls
+       * through to that passthrough branch, which writes into
+       * fd->segs[fd->numSegs] -- if numSegs weren't already bumped
+       * here, that write would land on THIS SAME slot (still "pending"
+       * until close), silently overwriting isProc/proc back to a raw-
+       * text segment and corrupting this proc's own representation.
+       * Bumping it immediately means any such line gets its own,
+       * later, non-colliding slot instead. */
+      fd->numSegs++;
     } else if (*line == '}') {
       if (proc != NULL) {
         proc->size = curpos;
-        fd->numSegs++;
       }
       inProc = 0;
       proc = NULL;
@@ -289,7 +301,18 @@ static int rlxParseFile(char *filename, RlxFileData *fd) {
       proc->numFixups++;
     } else {
       /* Passthrough: anything outside a proc (.big, @start, etc.), or an
-       * unrecognized/unsupported line inside one. Stored verbatim. */
+       * unrecognized/unsupported line inside one (e.g. ".library" --
+       * see the '{' branch above for why this slot is now guaranteed
+       * not to collide with an still-open proc's own segment). Stored
+       * verbatim, so it re-emits at the SAME point in segment order --
+       * for a still-open proc, that's right after that proc's own
+       * regenerated {...} block closes (rlxEmitProc always finishes
+       * the whole proc before this loop moves to the next segment),
+       * not literally inside it; harmless for a line like ".library"
+       * whose meaning doesn't depend on proc-nesting (confirmed: the
+       * unmodified, non-relaxed loadFile() path already links this
+       * project's own reported repro fine with it positioned either
+       * way). */
       seg = &fd->segs[fd->numSegs];
       seg->isProc = 0;
       strcpy(seg->rawLine, buffer);
