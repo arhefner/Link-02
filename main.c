@@ -77,6 +77,69 @@ void addReference(char *name, word value, char typ, byte low) {
   types[numReferences - 1] = typ;
 }
 
+void addModuleFixup(word address) {
+  numModuleFixups++;
+  if (numModuleFixups == 1)
+    moduleFixups = (word *)malloc(sizeof(word));
+  else
+    moduleFixups = (word *)realloc(moduleFixups, sizeof(word) * numModuleFixups);
+  moduleFixups[numModuleFixups - 1] = address;
+}
+
+void writeModuleFixups() {
+  /* Appended after outputBinary() has already written and closed the
+   * ordinary content -- reopens rather than folding into
+   * outputBinary() itself, so module output stays a strict superset
+   * of ordinary binary output with no change to that existing,
+   * already-proven path. Only meaningful for BM_BINARY -- -m combined
+   * with any other output mode is not a supported/expected
+   * combination, so it's silently skipped rather than corrupting a
+   * text-based format with raw appended/patched bytes. */
+  int file;
+  int i;
+  byte b;
+  word codeSize;
+  if (outMode != BM_BINARY) return;
+
+  /* Patch the self-referential code-size field first (a seek+write in
+   * the middle of the file), then reopen in append mode for the
+   * trailing fixup table -- two separate opens rather than juggling
+   * one file descriptor's position back and forth. */
+  file = open(outName, O_WRONLY, 0666);
+  if (file < 0) {
+    printf("Error: could not patch module size into %s\n", outName);
+    exit(1);
+  }
+  codeSize = (highest - lowest) + 1;
+  lseek(file, MODULE_SIZE_FIELD_OFFSET, SEEK_SET);
+  b = (codeSize >> 8) & 0xff;
+  write(file, &b, 1);
+  b = codeSize & 0xff;
+  write(file, &b, 1);
+  close(file);
+
+  file = open(outName, O_WRONLY | O_APPEND, 0666);
+  if (file < 0) {
+    printf("Error: could not append fixup table to %s\n", outName);
+    exit(1);
+  }
+  b = (numModuleFixups >> 8) & 0xff;
+  write(file, &b, 1);
+  b = numModuleFixups & 0xff;
+  write(file, &b, 1);
+  for (i = 0; i < numModuleFixups; i++) {
+    b = (moduleFixups[i] >> 8) & 0xff;
+    write(file, &b, 1);
+    b = moduleFixups[i] & 0xff;
+    write(file, &b, 1);
+  }
+  close(file);
+  if (!quiet) {
+    printf("Module size    : %04x\n", codeSize);
+    printf("Module fixups  : %d\n", numModuleFixups);
+  }
+}
+
 void addLibrary(char *name) {
   int i;
   /* A library can be named more than once -- e.g. a ".library" line is
@@ -332,6 +395,7 @@ int loadFile(char *filename) {
       value = readMem(addr + offset);
       value += offset;
       writeMem(addr + offset, value);
+      if (moduleMode) addModuleFixup(addr + offset);
     } else if (*line == '^' && loadModule != 0) {
       line++;
       line = getHex(line, &addr);
@@ -340,6 +404,7 @@ int loadFile(char *filename) {
       getHex(line, &lofs);
       value += lofs;
       memory[addr + offset] = (value >> 8) & 0xff;
+      if (moduleMode) addModuleFixup(addr + offset);
     } else if (*line == 'v' && loadModule != 0) {
       line++;
       line = getHex(line, &addr);
@@ -552,10 +617,12 @@ int doLink() {
       if (types[i] == 'W') {
         v = readMem(address) + values[s];
         writeMem(address, v);
+        if (moduleMode) addModuleFixup(address);
       }
       if (types[i] == 'H') {
         v = ((memory[address] << 8) + values[s] + lows[i]) >> 8;
         memory[address] = v & 0xff;
+        if (moduleMode) addModuleFixup(address);
       }
       if (types[i] == 'L') {
         v = memory[address] + values[s];
@@ -860,6 +927,9 @@ int main(int argc, char **argv) {
   rlxActive = 0;
   rlxDiscovering = 0;
   shortBranchFatal = 0;
+  moduleMode = 0;
+  numModuleFixups = 0;
+  moduleFixups = NULL;
   tv = time(NULL);
   localtime_r(&tv, &dt);
   buildMonth = dt.tm_mon + 1;
@@ -893,6 +963,8 @@ int main(int argc, char **argv) {
       addressMode = 'L';
     else if (strcmp(argv[i], "-r") == 0)
       doRelax = -1;
+    else if (strcmp(argv[i], "-m") == 0)
+      moduleMode = -1;
     else if (strcmp(argv[i], "-I") == 0) {
       i++;
       numIncPath++;
@@ -1025,6 +1097,16 @@ int main(int argc, char **argv) {
     printf("Errors during link.  Aborting output\n");
     exit(1);
   }
+  if (moduleMode && lowest != 0) {
+    /* A module's fixup table only makes sense relative to a load
+     * address whose own low byte is guaranteed 0 by the loader -- see
+     * header.h's own comment on moduleMode for the full reasoning.
+     * That guarantee is meaningless if the link itself didn't
+     * originate at 0000, so refuse rather than silently emit a table
+     * for the wrong origin. */
+    printf("Error: -m (module output) requires the link to originate at address 0000 (got %04x) -- module builds must \"org 0\"\n", lowest);
+    exit(1);
+  }
   if (numReferences > 0) {
     for (i = 0; i < numReferences; i++) {
       printf("Error: Symbol %s not found\n", references[i]);
@@ -1049,6 +1131,7 @@ int main(int argc, char **argv) {
         outputRcs();
         break;
     }
+    if (moduleMode) writeModuleFixups();
   }
 
   if (!quiet) {

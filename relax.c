@@ -857,6 +857,17 @@ static void rlxResetLinkState() {
   if (numRequires > 0) { free(requires); free(requireAdded); }
   numRequires = 0;
 
+  /* moduleFixups (-m) must be reset here too, for the exact same
+   * reason numReferences/numSymbols are: rlxLinkOnce() runs once per
+   * relaxation round (plus once more for the discovery pass), and
+   * only the FINAL round's resolution is what ends up in the output
+   * -- without this, fixup offsets from every earlier, now-discarded
+   * round (including the discovery pass, which never even runs
+   * relaxation) would silently accumulate into a wrong, bloated table. */
+  if (numModuleFixups > 0) free(moduleFixups);
+  moduleFixups = NULL;
+  numModuleFixups = 0;
+
   memset(memory, 0, sizeof(memory));
   memset(map, 0, sizeof(map));
   address = 0;

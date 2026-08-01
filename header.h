@@ -111,6 +111,33 @@ void rlxRecordDiscovered(char *libFile, char *procName);
  * output is written once this is set. */
 LINK int shortBranchFatal;
 
+/* Loadable-module output mode (-m). Appends a load-time fixup table
+ * after the ordinary binary content: a flat list of high-byte offsets,
+ * nothing else. Every fixup this linker already tracks resolves to a
+ * 2-byte address written high-byte-first (this project always links
+ * -be) -- if the CALLER guarantees the module is always loaded at a
+ * page-aligned address (load base's low byte is 0), adding the load
+ * base to any embedded address only ever changes its high byte, so
+ * that's the only thing worth recording. Low-byte-only fixups ('L'/
+ * 'v') and short-branch ('<') targets never carry an absolute address
+ * at all and are never recorded. This page-alignment assumption is
+ * the LOADER's own contract on the ELF-DOS side -- Link/02 itself
+ * doesn't enforce or depend on it beyond emitting this table. */
+LINK int moduleMode;
+LINK word *moduleFixups;
+LINK int numModuleFixups;
+void addModuleFixup(word address);
+
+/* -m output always patches the module's own total code+data size (2
+ * bytes, big-endian, "highest - lowest + 1") into the output file at
+ * this fixed offset, since that size is inherently self-referential --
+ * nothing in the assembled source can know its own final linked size
+ * ahead of time. A documented, general part of what -m output means:
+ * whatever module format opts into -m must reserve these 2 bytes for
+ * it (ELF-DOS's own include/modformat.inc calls this MOD_SIZE_OFF and
+ * deliberately matches this value). */
+#define MODULE_SIZE_FIELD_OFFSET 4
+
 FILE *findInputFile(char *filename, int isLibrary);
 int loadFile(char *filename);
 int doLink();
