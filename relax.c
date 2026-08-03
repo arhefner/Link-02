@@ -530,21 +530,45 @@ static word rlxRemap(word p, word *removed, int numRemoved) {
  * calls. */
 static byte rlxEmitNbytes[RLX_MAX_PROC_BYTES];
 static byte rlxEmitNdefined[RLX_MAX_PROC_BYTES];
+static int rlxEmitPartner[RLX_MAX_PROC_FIXUPS];
 
 static void rlxEmitProc(FILE *out, char *origFile, RlxProc *orig,
                          word *shrink, int numShrink) {
   word removed[RLX_MAX_PROC_FIXUPS];
   byte *nbytes = rlxEmitNbytes;
   byte *ndefined = rlxEmitNdefined;
+  int *partner = rlxEmitPartner;
   char fixupText[RLX_MAX_PROC_FIXUPS][80];
   int numFixupText = 0;
   word newSize;
   int i, j;
   word p, np;
-  int haveLastCaret = 0;
-  word lastCaretTargetNew = 0;
 
   for (i = 0; i < numShrink; i++) removed[i] = shrink[i];
+
+  /* Pair up every '^'/'v' fixup ONCE, before the main emission loop
+   * below touches any of them, rather than having 'v' guess at its
+   * partner while walking past it. A '^'/'v' pair is always emitted as
+   * two strictly adjacent entries (which one comes first depends on the
+   * compiled instruction's own byte order), but a 'v' checking only its
+   * immediate neighbors can be fooled when it sits between two
+   * UNRELATED '^' fixups -- e.g. "^A vB ^C", where vB's true partner is
+   * ^A (to its left) but ^C (to its right, really the start of a
+   * completely different pair) looks just as adjacent. A single greedy
+   * left-to-right sweep avoids this ambiguity entirely: claim the
+   * leftmost unclaimed '^'/'v' (or 'v'/'^') adjacent pair first, mark
+   * both entries used, and never reconsider a claimed entry -- so once
+   * A and B are claimed as a pair, C is no longer a candidate partner
+   * for B, and is free to pair correctly with whatever follows it. */
+  for (i = 0; i < orig->numFixups; i++) partner[i] = -1;
+  for (i = 0; i + 1 < orig->numFixups; i++) {
+    if (partner[i] != -1) continue;
+    if ((orig->fixups[i].type == '^' && orig->fixups[i + 1].type == 'v') ||
+        (orig->fixups[i].type == 'v' && orig->fixups[i + 1].type == '^')) {
+      partner[i] = i + 1;
+      partner[i + 1] = i;
+    }
+  }
 
   newSize = rlxRemap(orig->size, removed, numShrink);
   /* ndefined is now `byte *`, not an array -- sizeof(ndefined) would give
@@ -655,38 +679,21 @@ static void rlxEmitProc(FILE *out, char *origFile, RlxProc *orig,
       ndefined[newOff] = 1;
       sprintf(fixupText[numFixupText++], "^%04x %02x\n", newOff,
               targetNew & 0xff);
-      haveLastCaret = 1;
-      lastCaretTargetNew = targetNew;
     } else if (fx->type == 'v') {
       word targetNew;
-      /* A 'v'/'^' pair is always emitted ADJACENT in the fixup list by
-       * Asm/02, but which one comes first depends on the compiled
-       * instruction's own byte order (some code loads the low byte
-       * first, some the high byte first). A caret's own target can
-       * always be resolved on the spot (its own stored byte plus the
-       * paired low-byte value it carries), so it needs no lookahead --
-       * but 'v' by itself carries no high-byte information at all, so
-       * it must find its true partner regardless of which side of it
-       * that partner sits on. Search both neighbors rather than
-       * assuming '^' always comes first; only fall back to the low-
-       * byte-only reconstruction below (correct only for a proc under
-       * 256 bytes) if truly no adjacent '^' exists. */
-      int pairIdx = -1;
-      if (i + 1 < orig->numFixups && orig->fixups[i + 1].type == '^')
-        pairIdx = i + 1;
-      else if (i > 0 && orig->fixups[i - 1].type == '^')
-        pairIdx = i - 1;
-      if (pairIdx >= 0) {
-        RlxFixup *capFx = &orig->fixups[pairIdx];
+      /* 'v' by itself carries no high-byte information -- its target
+       * always comes from its '^' partner, identified up front by the
+       * greedy pairing pass above (see its own header comment for why a
+       * simple "check my neighbor" lookup isn't reliable on its own). */
+      if (partner[i] >= 0) {
+        RlxFixup *capFx = &orig->fixups[partner[i]];
         word targetOrig = (word)((orig->bytes[capFx->offset] << 8) |
                                   capFx->lofs);
         targetNew = rlxRemap(targetOrig, removed, numShrink);
-      } else if (haveLastCaret) {
-        targetNew = lastCaretTargetNew;
       } else {
-        /* Truly no '^' partner found anywhere nearby -- degrade
-         * gracefully as before (only correct if the proc is under 256
-         * bytes), rather than failing outright. */
+        /* No '^' partner found at all -- degrade gracefully (only
+         * correct if the proc is under 256 bytes), rather than failing
+         * outright. */
         targetNew = rlxRemap(orig->bytes[fx->offset], removed, numShrink);
       }
       nbytes[newOff] = targetNew & 0xff;
