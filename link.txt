@@ -14,6 +14,7 @@ link @controlfile
 -o name       - Specify output filename
 -l name       - Specify library to search
 -L path       - Add path to search lift for library files
+-m            - Output loadable-module format (see below)
 -be           - Use big-endian mode
 -le           - Use little-endian mode
 -v            - Display linker version
@@ -130,3 +131,44 @@ use):
                        per-pass object files (normally deleted) at
                        /tmp/relax_round<N>_<obj-index>.prg for
                        inspection.
+
+Loadable-module output (-m)
+----------------------------
+-m produces a relocatable module image intended to be loaded at
+runtime to an address not known until load time, then executed from
+there. It only has any effect combined with -b (straight binary
+output) -- -m with any other output mode is silently ignored.
+
+Output file layout:
+  offset 0            - module content begins here (reserve at least
+                         4 bytes at the front for this header -- see
+                         below); the module's own code/data follow
+  offset 4            - 2 bytes, big-endian: total code+data size
+                         (highest linked address - lowest + 1)
+  <end of content>    - 2 bytes, big-endian: number of fixups (N)
+                       - N * 2 bytes, big-endian: fixup table, one
+                         entry per high-byte offset needing
+                         relocation
+
+The size field at a fixed offset (4) exists because the module's own
+total size is self-referential -- nothing in the source can know its
+own final linked size ahead of time, so Link/02 patches it in after
+linking completes. Any module format that opts into -m must reserve
+these 2 bytes at that exact offset for this purpose (bytes 0-3 are
+otherwise unconstrained by Link/02 itself -- typically a magic number,
+version byte, or entry-point jump, whatever the module format's own
+loader expects there).
+
+The fixup table records every HIGH BYTE of a full address the linker
+resolved during this build (from '#', '+', and '^' fixups -- low-byte-
+only fixups like 'v' and short-branch ('<') targets never carry an
+absolute address, so they're never recorded). This assumes the loader
+always places the module at a page-aligned load address (the load
+base's own low byte is 0) -- under that assumption, adding the load
+base to any embedded address only ever changes its high byte, so
+recording just the offset of each high byte is enough for the loader
+to fully relocate the module: for each listed offset, add the load
+base's high byte to whatever byte is already there. Link/02 itself
+doesn't enforce or depend on the page-alignment assumption beyond
+emitting this table -- honoring it is entirely the loader's own
+responsibility.

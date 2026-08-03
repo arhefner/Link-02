@@ -2,7 +2,7 @@
 
 #include "header.h"
 
-#define NAME_AND_VERSION  "Link/02 v1.9"
+#define NAME_AND_VERSION  "Link/02 v1.10"
 
 struct tm *localtime_r(const time_t *timer, struct tm *buf)
 {
@@ -143,23 +143,18 @@ void writeModuleFixups() {
 void addLibrary(char *name) {
   int i;
   /* A library can be named more than once -- e.g. a ".library" line is
-   * emitted once per proc that needs it (string.lib declares
-   * ".library ctype.lib" five separate times), and numLibraries/
+   * emitted once per proc that needs it, so a library several procs
+   * depend on can appear many times across a build's object files. This
+   * dedup check matters a lot more than it looks: numLibraries/
    * libraries[] are never reset between relaxation rounds (see
    * rlxResetLinkState() in relax.c, which deliberately treats the
-   * library SET as invariant across rounds, same as numObjects/
-   * numLibPath/numIncPath). Without this check, each redundant
-   * ".library" line re-appended its target, and since the resolution
-   * loop in rlxLinkOnce() re-scans every entry in libraries[] on every
-   * pass until nothing new resolves, the list's own unchecked growth
-   * compounded across BOTH the inner resolution loop and every one of
-   * a -r build's relaxation rounds -- measured 2026-07-29 on a real
-   * downstream (ELFC) build: ctype.lib alone was being re-loaded and
-   * re-parsed from disk 159,270 times (0 dedup) for what should have
-   * been on the order of a few dozen. Confirmed via a direct three-
-   * way link02 timing comparison that -r's ~190x slowdown for that
-   * build was overwhelmingly attributable to this, not to relaxation's
-   * own iterative regenerate/relink rounds. */
+   * library SET as invariant across rounds), and the resolution loop in
+   * rlxLinkOnce() re-scans every entry in libraries[] on every pass
+   * until nothing new resolves -- so without this check, a duplicate
+   * library name doesn't just waste one extra load, it gets re-loaded
+   * and re-parsed on every resolution pass of every relaxation round,
+   * compounding into orders of magnitude more disk I/O than the
+   * duplicate count alone would suggest. */
   for (i = 0; i < numLibraries; i++)
     if (strcmp(libraries[i], name) == 0) return;
 
@@ -211,12 +206,12 @@ word adjust(word address, char *bound) {
  * directory), then via the -L library search path (isLibrary != 0)
  * or the -I include/object search path (isLibrary == 0), in the
  * order each -I/-L was given on the command line. Split out of
- * loadFile() itself (2026-07-23) so rlxParseFile() (relax.c, used for
- * a -r relaxation pass) can search the same paths for an object file
- * instead of only ever trying the current directory -- previously a
- * -r build failed with "Could not open input file" for any object
- * file that wasn't in the current directory, even though a plain
- * (non-relaxed) build of the exact same command line found it fine
+ * loadFile() itself so rlxParseFile() (relax.c, used for a -r
+ * relaxation pass) can search the same paths for an object file
+ * instead of only ever trying the current directory -- without this,
+ * a -r build fails with "Could not open input file" for any object
+ * file that isn't in the current directory, even though a plain
+ * (non-relaxed) build of the exact same command line finds it fine
  * via -I. Deliberately does NOT print any error message itself: the
  * two real messages ("Could not open library file: %s" / "Could not
  * open input file: %s") differ by caller, and rlxParseFile() is only
