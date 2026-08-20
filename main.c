@@ -2,7 +2,7 @@
 
 #include "header.h"
 
-#define NAME_AND_VERSION  "Link/02 v1.11"
+#define NAME_AND_VERSION  "Link/02 v1.12"
 
 struct tm *localtime_r(const time_t *timer, struct tm *buf)
 {
@@ -104,8 +104,24 @@ void writeModuleFixups() {
   /* Patch the self-referential code-size field first (a seek+write in
    * the middle of the file), then reopen in append mode for the
    * trailing fixup table -- two separate opens rather than juggling
-   * one file descriptor's position back and forth. */
-  file = open(outName, O_WRONLY, 0666);
+   * one file descriptor's position back and forth.
+   *
+   * O_BINARY IS REQUIRED ON BOTH OPENS (real bug, found on real
+   * Windows hardware 2026-08-20): every other raw-binary open() in
+   * this file already carries it (see outputBinary()/outputElfos()
+   * just below), but these two were missed. Without it, Windows'
+   * C runtime silently expands any byte written here that happens to
+   * equal 0x0a (LF) into the two bytes 0x0d 0x0a (CRLF) -- invisible
+   * on Linux/macOS, where text and binary file modes are identical,
+   * but on Windows it corrupts the fixup table itself: any fixup
+   * offset whose own low byte is exactly $0A silently grows by one
+   * byte, shifting every fixup entry after it by one position and
+   * making the whole table unreadable by the runtime loader. Root-
+   * caused by comparing a Windows-built bin/batch.mod against a
+   * Linux-built one byte-for-byte -- the two were identical up to
+   * the exact byte where a real fixup value of $000A had become
+   * $0D $0A instead. */
+  file = open(outName, O_WRONLY | O_BINARY, 0666);
   if (file < 0) {
     printf("Error: could not patch module size into %s\n", outName);
     exit(1);
@@ -118,7 +134,7 @@ void writeModuleFixups() {
   write(file, &b, 1);
   close(file);
 
-  file = open(outName, O_WRONLY | O_APPEND, 0666);
+  file = open(outName, O_WRONLY | O_APPEND | O_BINARY, 0666);
   if (file < 0) {
     printf("Error: could not append fixup table to %s\n", outName);
     exit(1);
