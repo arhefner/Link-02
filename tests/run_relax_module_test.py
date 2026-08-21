@@ -4,10 +4,11 @@ run_relax_module_test.py - automated regression test for link02's -r
 (short-branch relaxation) combined with -m (loadable-module fixup
 table) output.
 
-Answers a specific question: when relaxation shrinks branches across
-several rounds (shifting addresses as it goes), does the module's own
-fixup table end up describing the FINAL, fully-relaxed layout, or
-could it describe a stale, intermediate round's layout instead?
+Answers two related questions: when relaxation shrinks branches across
+several rounds (shifting addresses as it goes), do the module's own
+FIXUP table and the linker's own SYMBOL table (-s output / .sym file)
+both end up describing the FINAL, fully-relaxed layout -- or could
+either describe a stale, intermediate round's layout instead?
 
 Builds relax_module_test.asm (a long chain of trivially-shrinkable
 branches ending in one branch that can never shrink, chosen because it
@@ -18,17 +19,24 @@ own header comment), then:
      this test isn't exercising anything interesting).
   2. Confirms the module reports exactly one remaining fixup (the one
      branch designed to never shrink).
-  3. Decodes the real output binary directly and finds the actual
+  3. Independently walks the real compiled instruction stream from
+     address 0 (using only the raw bytes -- no reliance on -s's own
+     reported values anywhere in the walk) to arrive at tm_far_target's
+     true final address, and confirms it matches what -s reported --
+     verifying the SYMBOL table reflects the final, post-relaxation
+     layout, not a stale intermediate round's.
+  4. Decodes the real output binary directly and finds the actual
      3-byte LBR instruction encoding the never-shrinks branch, by its
      real byte content (opcode 0xC0 followed by tm_far_target's real
      linked address) -- not by trusting any address computed from
      source alone.
-  4. Confirms the fixup table's one recorded address is exactly one
+  5. Confirms the fixup table's one recorded address is exactly one
      byte past that instruction's own opcode (i.e. it points at the
-     2-byte operand field, not the opcode or something else).
-  5. Confirms the operand bytes, read from the file, decode to
+     2-byte operand field, not the opcode or something else) --
+     verifying the FIXUP table also reflects the final layout.
+  6. Confirms the operand bytes, read from the file, decode to
      tm_far_target's real linked address.
-  6. Simulates the actual runtime relocation a module loader performs
+  7. Simulates the actual runtime relocation a module loader performs
      (add an arbitrary nonzero load base to the fixup site) and
      confirms the result is the correct relocated branch target.
 
@@ -106,11 +114,71 @@ def main():
     if "tm_far_target" not in sym:
         fail("tm_far_target's linked address did not appear in -s output")
     far_target_addr = sym["tm_far_target"]
-    print(f"tm_far_target linked address: {far_target_addr:04x}")
+    print(f"tm_far_target linked address (per -s): {far_target_addr:04x}")
 
     bin_path = os.path.join(HERE, "relax_module_test.bin")
     with open(bin_path, "rb") as f:
         data = f.read()
+
+    # Independent ground-truth check on the SYMBOL TABLE itself, not
+    # just the fixup table: walk the real instruction stream starting
+    # right after the mandatory 4-byte -m module header (README.md's
+    # own documented "Loadable-module output" requirement -- 3-byte
+    # magic + 1-byte version here, matching kernel/batch_mod.asm's own
+    # real-world convention) using ONLY the raw compiled bytes -- no
+    # reliance on -s's own reported values as an input anywhere in
+    # this walk -- and confirm the address it independently arrives at
+    # for tm_far_target matches what -s reported. This is the same
+    # question as the fixup check below (does relaxation's own
+    # reset-per-round design also keep the SYMBOL table, not just the
+    # fixup table, correctly reflecting the final round?), verified a
+    # second, structurally different way.
+    MODULE_HEADER_LEN = 6  # 3-byte magic + 1-byte version + 2-byte
+                           # code-size field (the field Link/02 -m
+                           # itself patches at file offset 4)
+    addr = MODULE_HEADER_LEN
+    branches_seen = 0
+    # 80 chain branches (tm_l0..tm_l79 -> tm_l1..tm_l80) plus the one
+    # final never-shrinks branch (tm_far_branch -> tm_far_target) = 81
+    # branch instructions total, each either 2 bytes (shrunk short
+    # branch, opcode in the $30-$3F short-branch family) or 3 bytes
+    # (still-long branch, opcode $C0/LBR).
+    while branches_seen < 81:
+        op = data[addr]
+        if op == 0xC0:          # LBR (long branch), 3 bytes
+            addr += 3
+        elif 0x30 <= op <= 0x3F:  # short branch family, 2 bytes
+            addr += 2
+        else:
+            fail(f"unexpected opcode {op:02x} at address {addr:04x} while "
+                 f"independently walking the instruction stream (expected "
+                 f"branch #{branches_seen} of 81)")
+        branches_seen += 1
+    # Next byte should be the RTN (0xD5) right after tm_far_branch.
+    if data[addr] != 0xD5:
+        fail(f"expected RTN (0xd5) at {addr:04x} right after the 81st "
+             f"branch, found {data[addr]:02x}")
+    addr += 1
+    # Then exactly 2000 bytes of zero-filled ds padding.
+    pad_start = addr
+    addr += 2000
+    if any(b != 0 for b in data[pad_start:addr]):
+        fail(f"expected 2000 bytes of zero padding at {pad_start:04x}, "
+             f"found a nonzero byte in that range")
+    # addr now independently points at tm_far_target -- computed
+    # entirely from raw bytes, with zero dependence on -s's own output.
+    independent_far_target_addr = addr
+    print(f"tm_far_target address (independently walked from raw bytes): "
+          f"{independent_far_target_addr:04x}")
+    if independent_far_target_addr != far_target_addr:
+        fail(
+            f"THE BUG THIS CHECK EXISTS TO CATCH: -s reports "
+            f"tm_far_target at {far_target_addr:04x}, but independently "
+            f"walking the real compiled instruction stream from address 0 "
+            f"arrives at {independent_far_target_addr:04x} instead -- the "
+            f"linker's own SYMBOL TABLE output does not match the real, "
+            f"final, post-relaxation layout."
+        )
 
     # The fixup table is the last (2 + numFixups*2) bytes: a 2-byte
     # count (which we already have from the printed summary) followed

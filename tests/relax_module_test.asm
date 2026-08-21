@@ -42,6 +42,27 @@
 
             proc    tm_main
 
+; -m's own documented requirement (README.md, "Loadable-module output"):
+; the first 4 bytes of any -m module are reserved for the module's own
+; header content, followed immediately by a 2-byte code-size field
+; Link/02 itself patches in at exactly file offset 4 -- unconditionally,
+; with no validation that a real placeholder even exists there, so a
+; module that doesn't reserve this exact 6-byte layout (4-byte header +
+; 2-byte size field) gets those 2 bytes silently overwritten with no
+; error (found the hard way while first writing this test: omitting
+; the size-field placeholder here left it landing directly on top of
+; tm_l0's own first branch instruction). Reserved here as a 3-byte
+; magic + 1-byte version + the 2-byte size placeholder itself, matching
+; kernel/batch_mod.asm's own real-world convention (ELF-DOS) byte for
+; byte, even though this test has no actual loader that reads any of
+; it -- the point is only to occupy the required bytes so the patch
+; lands where it's supposed to, not on real code.
+            db      'T','M','T'
+            db      1
+            dw      0                   ; code_size placeholder --
+                                        ; patched by -m itself, this
+                                        ; source-level value is never
+                                        ; the real one
 tm_l0:      lbr     tm_l1
 tm_l1:      lbr     tm_l2
 tm_l2:      lbr     tm_l3
