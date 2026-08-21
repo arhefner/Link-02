@@ -15,3 +15,14 @@ link02
 *.lib
 *.zip
 *.tar.gz
+
+# tests/ keeps real, committed regression-test sources despite the
+# broad *.asm/*.prg/*.bin ignores above (which exist for stray local
+# scratch files elsewhere in the repo) -- generated build artifacts
+# inside tests/ are still ignored individually below.
+!tests/*.asm
+tests/*.prg
+tests/*.bin
+tests/*.lst
+tests/*.build
+tests/*.lkb
