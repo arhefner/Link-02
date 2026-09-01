@@ -1,6 +1,6 @@
 PROJECT=link02
 CC=gcc
-DEFS=-std=c99
+DEFS=-std=c99 -g
 INDIR=
 INCS=
 LIBDIR=
@@ -24,5 +24,5 @@ install:
 	chmod a+rx /usr/local/bin/link02
 
 main.o:                header.h main.c
-relax.o:                header.h relax.c
+relax.o:               header.h relax.c
 
