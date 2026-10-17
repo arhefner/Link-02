@@ -2,7 +2,7 @@
 
 #include "header.h"
 
-#define NAME_AND_VERSION  "Link/02 v1.13"
+#define NAME_AND_VERSION  "Link/02 v1.14"
 
 struct tm *localtime_r(const time_t *timer, struct tm *buf)
 {
