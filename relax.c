@@ -739,23 +739,21 @@ static void rlxEmitProc(FILE *out, char *origFile, RlxProc *orig,
        * once resolved. Reconstruct the original target from the stored
        * byte and remap it exactly like any other local target instead.
        *
-       * The stored byte is still the ONLY information available for the
-       * target -- unlike the '#'-shrink case, there are no unmasked
-       * high bits to recover, since asm02 itself only ever stored one
-       * byte for a genuine short branch in the first place. This means
-       * a hand-written short branch whose target's own proc-relative
-       * offset is >= 256 was never representable correctly even before
-       * relaxation existed, and still isn't -- a pre-existing, inherent
-       * limit of the '<' mechanism itself, not something relaxation
-       * introduces or could fix. Only matters for a proc large enough
-       * to need it; most hand-written short branches are written inside
-       * small, tight loops well under that size. */
-      word targetOrig = orig->bytes[fx->offset];
+       * asm02 stores only the low byte of the target, but a short branch
+       * stays on the page of its own operand byte, which the assembler
+       * checked, so the high byte is the operand's: the whole
+       * proc-relative target is recovered, also for a branch more than
+       * 256 bytes into a proc. The full remapped target goes in the
+       * generated '<' line, which loadFile() resolves and validates; if
+       * shrinking has moved the branch and its target onto different
+       * pages, that check reports it, as a hand-written short branch
+       * can not be made long again. */
+      word targetOrig = (fx->offset & 0xff00) | orig->bytes[fx->offset];
       word targetNew = rlxRemap(targetOrig, removed, numShrink);
       nbytes[newOff] = targetNew & 0xff;
       ndefined[newOff] = 1;
       sprintf(fixupText[numFixupText++], "<%04x %04x\n", newOff,
-              targetNew & 0xff);
+              targetNew);
     }
   }
 

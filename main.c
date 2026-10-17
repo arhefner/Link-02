@@ -492,7 +492,14 @@ int loadFile(char *filename) {
           }
         }
       } else {
-        value = memory[addr + offset] + offset;
+        /* The stored byte is the low byte of the target. A short branch
+         * stays on the page of its own operand byte, which the
+         * assembler checked, so the target's high byte is the
+         * operand's: rebuild the whole proc-relative target before
+         * relocating it. Adding the low byte alone to the proc base
+         * would put every target on the proc's first page, rejecting
+         * every good short branch more than 256 bytes into a proc. */
+        value = ((addr & 0xff00) | memory[addr + offset]) + offset;
         if (((addr + offset) & 0xff00) != (value & 0xff00)) {
           printf("Error: Short branch out of page at %04x\n", addr + offset);
           shortBranchFatal = 1;
