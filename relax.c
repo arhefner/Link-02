@@ -552,6 +552,109 @@ static word rlxRemap(word p, word *removed, int numRemoved) {
 static byte rlxEmitNbytes[RLX_MAX_PROC_BYTES];
 static byte rlxEmitNdefined[RLX_MAX_PROC_BYTES];
 static int rlxEmitPartner[RLX_MAX_PROC_FIXUPS];
+static int rlxCheckPartner[RLX_MAX_PROC_FIXUPS];
+
+/* ---- The low byte of a local address ('v') ----
+ *
+ * Asm/02 writes "ldi label.1" as a '^' record, which carries the whole
+ * proc-relative target (its high byte in the content, its low byte as the
+ * record's parameter), but "ldi label.0" as a 'v' record, which carries
+ * only the low byte, in the content. A plain link needs no more: the low
+ * byte of the proc's base is simply added. Regenerating a proc needs the
+ * whole target, to find where it moved to.
+ *
+ * A 'v' gets it in one of two ways:
+ *
+ *   1. From a '^' of the same label right next to it in the fixup list,
+ *      as "ldi label.1 / phi rf / ldi label.0 / plo rf" gives. The '^'
+ *      must have the same low byte as the 'v', or it is another label:
+ *      in "ldi vars.1 / phi r8 / ldi v_b.0" the two are next to each
+ *      other but are not a pair, and taking the target of vars for v_b
+ *      once wrote the low byte of vars there (cts.lib of Elf-speech,
+ *      linked with ElfC -O).
+ *
+ *   2. Without one, from the low byte alone: the target is one of the
+ *      addresses with that low byte within the proc, one on each of its
+ *      pages. If they all have the same low byte after the shrinks --
+ *      always so when nothing is shrunk, or the proc is one page -- that
+ *      is the answer, whichever one the target is.
+ *
+ * If neither works, the 'v' can not be placed, and rlxEmitFile shrinks
+ * nothing in that proc, so that it stays exactly as assembled. */
+
+/* Pair each 'v' with a '^' of the same label next to it, see above.
+ * partner[i] is the index of the fixup paired with fixup i, or -1. */
+static void rlxPairLowBytes(RlxProc *orig, int *partner) {
+  int i;
+  for (i = 0; i < orig->numFixups; i++) partner[i] = -1;
+  /* A single greedy left-to-right sweep: claim the leftmost unclaimed
+   * adjacent '^'/'v' (or 'v'/'^') pair of the same low byte, and never
+   * reconsider a claimed entry, so that in "^A vB ^C" with A and B a
+   * pair, C is left free to pair with whatever follows it. */
+  for (i = 0; i + 1 < orig->numFixups; i++) {
+    RlxFixup *a = &orig->fixups[i];
+    RlxFixup *b = &orig->fixups[i + 1];
+    RlxFixup *hi, *lo;
+    if (partner[i] != -1) continue;
+    if (a->type == '^' && b->type == 'v') { hi = a; lo = b; }
+    else if (a->type == 'v' && b->type == '^') { hi = b; lo = a; }
+    else continue;
+    if ((hi->lofs & 0xff) != orig->bytes[lo->offset]) continue;
+    partner[i] = i + 1;
+    partner[i + 1] = i;
+  }
+}
+
+/* The new low byte of a 'v' with no '^' partner, from its low byte
+ * alone. Returns 1 and sets *out if every address of the proc with that
+ * low byte has the same new low byte, 0 if they differ. */
+static int rlxLoneLowByte(RlxProc *orig, byte low, word *removed,
+                          int numRemoved, byte *out) {
+  int h, found = 0;
+  byte first = 0;
+  for (h = 0; h <= (orig->size >> 8); h++) {
+    word t = (word)((h << 8) | low);
+    byte n;
+    if (t > orig->size) continue;   /* the end of the proc is a target too */
+    n = rlxRemap(t, removed, numRemoved) & 0xff;
+    if (!found) { first = n; found = 1; }
+    else if (n != first) return 0;
+  }
+  /* No address of the proc has that low byte, so the target is not in
+   * it: nothing to go by, keep the byte as it was remapped before. */
+  *out = found ? first : (byte)(rlxRemap(low, removed, numRemoved) & 0xff);
+  return 1;
+}
+
+/* Whether a proc has a 'v' that can not be placed with these shrinks:
+ * no '^' partner, and its low byte alone is not enough. Sets *where to
+ * its offset. */
+static int rlxHasLooseLowByte(RlxProc *orig, word *removed, int numRemoved,
+                              word *where) {
+  int i;
+  byte b;
+  rlxPairLowBytes(orig, rlxCheckPartner);
+  for (i = 0; i < orig->numFixups; i++) {
+    RlxFixup *fx = &orig->fixups[i];
+    if (fx->type != 'v' || rlxCheckPartner[i] >= 0) continue;
+    if (!rlxLoneLowByte(orig, orig->bytes[fx->offset], removed, numRemoved,
+                        &b)) {
+      *where = fx->offset;
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/* The procs left unshrunk this round because of a 'v' that can not be
+ * placed, reported after the final round. */
+#define RLX_MAX_UNSHRUNK 256
+static struct {
+  char fileName[1024];
+  char procName[128];
+  word offset;
+} rlxUnshrunk[RLX_MAX_UNSHRUNK];
+static int rlxNumUnshrunk = 0;
 
 static void rlxEmitProc(FILE *out, char *origFile, RlxProc *orig,
                          word *shrink, int numShrink) {
@@ -567,29 +670,9 @@ static void rlxEmitProc(FILE *out, char *origFile, RlxProc *orig,
 
   for (i = 0; i < numShrink; i++) removed[i] = shrink[i];
 
-  /* Pair up every '^'/'v' fixup ONCE, before the main emission loop
-   * below touches any of them, rather than having 'v' guess at its
-   * partner while walking past it. A '^'/'v' pair is always emitted as
-   * two strictly adjacent entries (which one comes first depends on the
-   * compiled instruction's own byte order), but a 'v' checking only its
-   * immediate neighbors can be fooled when it sits between two
-   * UNRELATED '^' fixups -- e.g. "^A vB ^C", where vB's true partner is
-   * ^A (to its left) but ^C (to its right, really the start of a
-   * completely different pair) looks just as adjacent. A single greedy
-   * left-to-right sweep avoids this ambiguity entirely: claim the
-   * leftmost unclaimed '^'/'v' (or 'v'/'^') adjacent pair first, mark
-   * both entries used, and never reconsider a claimed entry -- so once
-   * A and B are claimed as a pair, C is no longer a candidate partner
-   * for B, and is free to pair correctly with whatever follows it. */
-  for (i = 0; i < orig->numFixups; i++) partner[i] = -1;
-  for (i = 0; i + 1 < orig->numFixups; i++) {
-    if (partner[i] != -1) continue;
-    if ((orig->fixups[i].type == '^' && orig->fixups[i + 1].type == 'v') ||
-        (orig->fixups[i].type == 'v' && orig->fixups[i + 1].type == '^')) {
-      partner[i] = i + 1;
-      partner[i + 1] = i;
-    }
-  }
+  /* Pair each 'v' with its '^' once, before the emission loop below
+   * touches any of them -- see rlxPairLowBytes. */
+  rlxPairLowBytes(orig, partner);
 
   newSize = rlxRemap(orig->size, removed, numShrink);
   /* ndefined is now `byte *`, not an array -- sizeof(ndefined) would give
@@ -701,23 +784,24 @@ static void rlxEmitProc(FILE *out, char *origFile, RlxProc *orig,
       sprintf(fixupText[numFixupText++], "^%04x %02x\n", newOff,
               targetNew & 0xff);
     } else if (fx->type == 'v') {
-      word targetNew;
-      /* 'v' by itself carries no high-byte information -- its target
-       * always comes from its '^' partner, identified up front by the
-       * greedy pairing pass above (see its own header comment for why a
-       * simple "check my neighbor" lookup isn't reliable on its own). */
+      /* See "The low byte of a local address" above rlxPairLowBytes. */
+      byte newLow;
       if (partner[i] >= 0) {
         RlxFixup *capFx = &orig->fixups[partner[i]];
         word targetOrig = (word)((orig->bytes[capFx->offset] << 8) |
                                   capFx->lofs);
-        targetNew = rlxRemap(targetOrig, removed, numShrink);
-      } else {
-        /* No '^' partner found at all -- degrade gracefully (only
-         * correct if the proc is under 256 bytes), rather than failing
-         * outright. */
-        targetNew = rlxRemap(orig->bytes[fx->offset], removed, numShrink);
+        newLow = rlxRemap(targetOrig, removed, numShrink) & 0xff;
+      } else if (!rlxLoneLowByte(orig, orig->bytes[fx->offset], removed,
+                                 numShrink, &newLow)) {
+        /* rlxEmitFile shrinks nothing in a proc with such a 'v', and with
+         * nothing shrunk every 'v' can be placed, so this can not
+         * happen. */
+        printf("Error: proc '%s' in %s: the low byte of a local address "
+               "at %04x can not be placed -- this should not happen; "
+               "please report it\n", orig->name, origFile, fx->offset);
+        exit(1);
       }
-      nbytes[newOff] = targetNew & 0xff;
+      nbytes[newOff] = newLow;
       ndefined[newOff] = 1;
       sprintf(fixupText[numFixupText++], "v%04x\n", newOff);
     } else if (fx->type == '?' || fx->type == '!' || fx->type == '\\') {
@@ -847,6 +931,9 @@ static void rlxEmitFile(char *tmpPath, RlxFileData *fd, int isLibraryFile) {
       int j;
       if (isLibraryFile && !rlxIsDiscovered(fd->origName, proc->name))
         continue;
+      int remainingBefore = rlxShrinkRemaining;
+      int countBefore = rlxActualShrinkCount;
+      word where;
       n = 0;
       for (j = 0; j < proc->numFixups; j++)
         if (proc->fixups[j].type == '#' &&
@@ -858,6 +945,19 @@ static void rlxEmitFile(char *tmpPath, RlxFileData *fd, int isLibraryFile) {
           rlxActualShrinkCount++;
           shrink[n++] = proc->fixups[j].offset;
         }
+      /* A 'v' that these shrinks would leave without a place: shrink
+       * nothing in this proc, see rlxPairLowBytes. */
+      if (n > 0 && rlxHasLooseLowByte(proc, shrink, n, &where)) {
+        n = 0;
+        rlxShrinkRemaining = remainingBefore;
+        rlxActualShrinkCount = countBefore;
+        if (rlxNumUnshrunk < RLX_MAX_UNSHRUNK) {
+          strcpy(rlxUnshrunk[rlxNumUnshrunk].fileName, fd->origName);
+          strcpy(rlxUnshrunk[rlxNumUnshrunk].procName, proc->name);
+          rlxUnshrunk[rlxNumUnshrunk].offset = where;
+          rlxNumUnshrunk++;
+        }
+      }
       rlxEmitProc(out, fd->origName, proc, shrink, n);
     }
   }
@@ -1123,6 +1223,7 @@ int runRelaxedLink() {
     rlxNumFailedThisRound = 0;
     rlxShrinkRemaining = rlxShrinkBudget;
     rlxActualShrinkCount = 0;
+    rlxNumUnshrunk = 0;
     for (i = 0; i < numAllFiles; i++) {
       rlxEmitFile(tmpPaths[i], &files[i], i >= numObjects);
     }
@@ -1206,9 +1307,15 @@ int runRelaxedLink() {
   rlxActive = 0;
 
   totalShrunk = rlxActualShrinkCount;
-  if (!origQuiet)
+  if (!origQuiet) {
     printf("Relaxation: %d of %d local long branches shortened (%d rounds)\n",
            totalShrunk, totalCandidates, round + 1);
+    for (i = 0; i < rlxNumUnshrunk; i++)
+      printf("Relaxation: the branches of proc %s in %s are left long, as "
+             "the low byte of a local address at %04x could not be "
+             "placed\n", rlxUnshrunk[i].procName, rlxUnshrunk[i].fileName,
+             rlxUnshrunk[i].offset);
+  }
 
   for (i = 0; i < numAllFiles; i++) {
     remove(tmpPaths[i]);

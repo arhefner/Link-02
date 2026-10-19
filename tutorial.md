@@ -426,6 +426,29 @@ any of this in the object file itself; it is purely a Link/02-side
 optimization, invisible to your assembler except for the '#'/'!'
 tags it emits up front.
 
+Regenerating a procedure needs the whole target of every local
+reference, to find where it moved to. A '^' record has it: the high
+byte in the data and the low byte as its parameter. A 'v' record has
+only the low byte, so Link/02 places it in one of two ways. If a '^'
+record of the same target is right next to it in the list -- the
+same low byte, as "ldi label.1 ... ldi label.0" gives -- it takes the
+target from that. Otherwise it tries the address with that low byte
+on each page of the procedure, and if they all end up with the same
+low byte after the shrinks, which is always so when nothing before
+them shrinks or the procedure is one page, that is the answer. If
+they do not, the 'v' can not be placed, so no branch of that
+procedure is shrunk, and Link/02 says so:
+
+```text
+          Relaxation: the branches of proc am in ambiguous.prg are left
+          long, as the low byte of a local address at 0164 could not be
+          placed
+```
+
+An assembler can avoid that by writing the high byte too, or by
+loading the address of a label on a page of its own, such as
+variables that are on a page boundary, before any shrinkable branch.
+
 If your procedure genuinely needs a short branch at a specific,
 known-safe spot -- a tight loop where every byte or cycle counts,
 say -- your assembler can still emit a plain '<' record directly,
